@@ -1,7 +1,10 @@
+import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 import ollama
+
 
 from app.config import settings
 from app.agent.tools.registry import AVAILABLE_TOOLS, execute_tool
@@ -35,18 +38,57 @@ class OrchestratorResult:
     pending_confirmations: list[dict[str, Any]] = field(default_factory=list)
 
 
+def extract_tool_calls_from_text(content: str) -> tuple[str, list[dict[str, Any]]]:
+    """
+    Extract embedded tool calls outputted as raw text by models (e.g. Qwen <tool_call> tags or json snippets).
+    Returns (cleaned_content, extracted_tool_calls).
+    """
+    if not content or not isinstance(content, str):
+        return content, []
+
+    extracted = []
+    tag_pattern = re.compile(r"(?:<tool_call>)?\s*(\{[\s\S]*?\})\s*</tool_call>", re.DOTALL)
+    for m in tag_pattern.finditer(content):
+        try:
+            parsed = json.loads(m.group(1).strip())
+            if isinstance(parsed, dict) and ("name" in parsed or "function" in parsed):
+                fn_name = parsed.get("name") or parsed.get("function", {}).get("name")
+                fn_args = parsed.get("arguments") or parsed.get("args") or parsed.get("function", {}).get("arguments", {})
+                if isinstance(fn_args, str):
+                    try:
+                        fn_args = json.loads(fn_args)
+                    except Exception:
+                        fn_args = {"query": fn_args}
+                if fn_name:
+                    extracted.append({
+                        "function": {
+                            "name": fn_name,
+                            "arguments": fn_args if isinstance(fn_args, dict) else {}
+                        }
+                    })
+        except Exception:
+            pass
+
+    if extracted:
+        cleaned_content = tag_pattern.sub("", content).strip()
+        return cleaned_content, extracted
+
+    return content, []
+
+
 DEFAULT_SYSTEM_PROMPT = (
     "You are Jarvis, a highly capable local AI assistant running on Windows with direct access to tools, memory, and skills.\n"
     "TOOL USAGE RULES:\n"
-    "1. When the user asks to inspect, read, check, or view a file, invoke 'read_file(file_path=...)' with the exact path.\n"
-    "2. When the user asks to list, show, or browse files/folders in a directory, invoke 'list_directory(path=...)'.\n"
-    "3. When the user asks for current news, live facts, latest software releases, or to search online, invoke 'web_search(query=...)'.\n"
-    "4. When the user provides a link/URL or asks to read/summarize a webpage, invoke 'fetch_url(url=...)'.\n"
-    "5. When the user asks to run terminal commands, inspect system processes, or execute scripts, invoke 'execute_command(command=...)'.\n"
+    "1. When the user asks to search online, look up current news, live facts, latest software releases, or web information, ALWAYS call 'web_search(query=...)'.\n"
+    "2. When the user provides a link/URL or asks to read, fetch, or summarize a web page, ALWAYS call 'fetch_url(url=...)'. Never use read_file for web URLs (http/https).\n"
+    "3. When the user asks to inspect, read, check, or view a LOCAL file on disk, invoke 'read_file(file_path=...)'.\n"
+    "4. When the user asks to list, show, or browse files/folders in a local directory, invoke 'list_directory(path=...)'.\n"
+    "5. When the user asks to run terminal commands, inspect system processes, or execute local scripts, invoke 'execute_command(command=...)'. Do NOT use execute_command for web searching.\n"
     "6. For system uptime or disk space, use the dedicated diagnostics tools ('get_disk_usage', 'get_system_uptime').\n"
     "7. If a request is purely conversational or asking for advice/explanations, reply directly with helpful text and do NOT call tools unnecessarily.\n"
     "8. Always use clean relative paths (e.g. '.', 'docs', 'backend/app', 'skills')."
 )
+
 
 
 
@@ -248,7 +290,14 @@ class AgentOrchestrator:
                 content = getattr(message_obj, "content", "") or ""
                 tool_calls = getattr(message_obj, "tool_calls", None)
 
-            # If no tools were invoked, save assistant message and return
+            # If Ollama didn't populate tool_calls, check if the model outputted raw <tool_call> text
+            if not tool_calls:
+                content, extracted_calls = extract_tool_calls_from_text(content)
+                if extracted_calls:
+                    logger.info("Extracted %d tool call(s) from raw model text stream", len(extracted_calls))
+                    tool_calls = extracted_calls
+
+            # If still no tools were invoked, save assistant message and return
             if not tool_calls:
                 logger.info("No tool calls requested. Returning final model response.")
                 self.memory_store.append_message(session_id, role="assistant", content=content)
@@ -262,6 +311,7 @@ class AgentOrchestrator:
                     fallback_used=False,
                     tools_used=tools_used
                 )
+
 
             logger.info("Model requested %d tool call(s)", len(tool_calls))
 

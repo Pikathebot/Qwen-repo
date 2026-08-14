@@ -6,13 +6,13 @@ logger = logging.getLogger("jarvis.agent.tools.web_search")
 
 def web_search(query: str, max_results: int = 5) -> str:
     """
-    Search the web using DuckDuckGo for live information, current documentation, latest news, or facts.
-    Returns structured markdown with titles, URLs, and concise snippets.
+    Search the web using DuckDuckGo for live internet information, current documentation, latest news, software releases, or online facts. Always use this tool when the user asks to search online or find current information.
 
     Args:
-        query: The search query string (e.g. 'Python 3.13 release date', 'FastAPI background tasks').
+        query: The search query string (e.g. 'Python 3.13 features', 'FastAPI background tasks').
         max_results: Maximum number of top results to retrieve (default 5, maximum 10).
     """
+
     clean_query = str(query or "").strip()
     if not clean_query:
         return "Error: Search query cannot be empty."

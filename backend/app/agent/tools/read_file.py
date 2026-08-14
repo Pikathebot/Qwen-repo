@@ -3,13 +3,17 @@ from pathlib import Path
 
 def read_file(file_path: str) -> str:
     """
-    Read and return the text contents of a file on disk. Always use this tool when the user asks to read, inspect, view, or check what is written inside a file.
+    Read and return the text contents of a LOCAL file on disk. Do NOT use this tool for web URLs (http/https); use fetch_url instead.
 
     Args:
-        file_path: Relative path of the file to read (e.g. 'docs/PLAN.md', 'test.txt').
+        file_path: Relative path of the local file to read (e.g. 'docs/PLAN.md', 'test.txt').
     """
-    raw_path = file_path.strip()
+    raw_path = str(file_path or "").strip()
+    if raw_path.startswith("http://") or raw_path.startswith("https://"):
+        return f"Error: '{file_path}' is a web URL, not a local file on disk. Please invoke the 'fetch_url(url=\"{file_path}\")' tool to read this web page."
+
     path = Path(raw_path)
+
 
     if not path.exists():
         base_candidate = Path(".") / Path(raw_path).name

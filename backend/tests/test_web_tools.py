@@ -146,3 +146,23 @@ def test_registry_registration():
     # Test execution via execute_tool
     res = execute_tool("web_search", {"query": ""})
     assert "Error: Search query cannot be empty" in res
+
+
+def test_extract_tool_calls_from_text():
+    from app.agent.orchestrator import extract_tool_calls_from_text
+
+    raw_text = '{"arguments": {"query": "fastapi.tiangolo.com"}, "name": "web_search"}</tool_call>'
+    cleaned, calls = extract_tool_calls_from_text(raw_text)
+
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "web_search"
+    assert calls[0]["function"]["arguments"] == {"query": "fastapi.tiangolo.com"}
+    assert cleaned == ""
+
+    # Test full tag
+    raw_text_2 = '<tool_call>\n{"name": "fetch_url", "arguments": {"url": "https://fastapi.tiangolo.com"}}\n</tool_call>'
+    cleaned_2, calls_2 = extract_tool_calls_from_text(raw_text_2)
+    assert len(calls_2) == 1
+    assert calls_2[0]["function"]["name"] == "fetch_url"
+    assert calls_2[0]["function"]["arguments"]["url"] == "https://fastapi.tiangolo.com"
+

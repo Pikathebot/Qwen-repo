@@ -19,13 +19,14 @@ UNWANTED_TAGS = [
 
 def fetch_url(url: str, max_chars: int = 8000) -> str:
     """
-    Fetch the content of a web page URL and return its main article text converted to clean markdown.
+    Fetch the content of a web page URL (http/https) and return its main article text converted to clean markdown. Always use this tool when the user provides a web link or asks to read, inspect, or summarize a webpage.
     Automatically strips ads, headers, scripts, and footers, and limits length to fit the LLM context window.
 
     Args:
-        url: The web URL to fetch (e.g. 'https://docs.python.org/3/whatsnew/3.12.html').
+        url: The web URL to fetch (e.g. 'https://docs.python.org/3/whatsnew/3.13.html', 'https://fastapi.tiangolo.com').
         max_chars: Maximum character budget to return (default 8000, maximum 25000).
     """
+
     clean_url = str(url or "").strip()
     if not clean_url:
         return "Error: URL cannot be empty."
