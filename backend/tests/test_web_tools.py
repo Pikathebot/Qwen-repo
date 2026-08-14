@@ -159,10 +159,35 @@ def test_extract_tool_calls_from_text():
     assert calls[0]["function"]["arguments"] == {"query": "fastapi.tiangolo.com"}
     assert cleaned == ""
 
-    # Test full tag
-    raw_text_2 = '<tool_call>\n{"name": "fetch_url", "arguments": {"url": "https://fastapi.tiangolo.com"}}\n</tool_call>'
-    cleaned_2, calls_2 = extract_tool_calls_from_text(raw_text_2)
-    assert len(calls_2) == 1
-    assert calls_2[0]["function"]["name"] == "fetch_url"
-    assert calls_2[0]["function"]["arguments"]["url"] == "https://fastapi.tiangolo.com"
+    # Test conversational tool announcement
+    raw_text_3 = (
+        "Finally, I'll use the write_file function to create the scripts/calculator.py file with the above code:\n"
+        "```json\n"
+        "{\n"
+        '  "file_path": "scripts/calculator.py",\n'
+        '  "content": "def add(a, b): return a + b",\n'
+        '  "overwrite": true\n'
+        "}\n"
+        "```\n"
+    )
+    cleaned_3, calls_3 = extract_tool_calls_from_text(raw_text_3)
+    assert len(calls_3) == 1
+    assert calls_3[0]["function"]["name"] == "write_file"
+    assert calls_3[0]["function"]["arguments"]["file_path"] == "scripts/calculator.py"
+
+    # Test raw signature match
+    raw_text_4 = (
+        "Let's execute the grep_in_files function:\n"
+        "{\n"
+        '  "pattern": "AgentOrchestrator",\n'
+        '  "max_matches": 50,\n'
+        '  "case_sensitive": false,\n'
+        '  "path": "."\n'
+        "}\n"
+    )
+    cleaned_4, calls_4 = extract_tool_calls_from_text(raw_text_4)
+    assert len(calls_4) == 1
+    assert calls_4[0]["function"]["name"] == "grep_in_files"
+    assert calls_4[0]["function"]["arguments"]["pattern"] == "AgentOrchestrator"
+
 

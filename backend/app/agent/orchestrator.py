@@ -40,17 +40,23 @@ class OrchestratorResult:
 
 def extract_tool_calls_from_text(content: str) -> tuple[str, list[dict[str, Any]]]:
     """
-    Extract embedded tool calls outputted as raw text by models (e.g. Qwen <tool_call> tags or json snippets).
+    Extract embedded tool calls outputted as raw text by models:
+    1. <tool_call> ... </tool_call> tags
+    2. Conversational tool announcements: 'use the write_file function: { ... }'
+    3. Markdown ```json { ... } ``` or raw JSON blocks matching known tool argument signatures.
     Returns (cleaned_content, extracted_tool_calls).
     """
     if not content or not isinstance(content, str):
         return content, []
 
     extracted = []
+
+    # 1. Standard <tool_call>...</tool_call> tags
     tag_pattern = re.compile(r"(?:<tool_call>)?\s*(\{[\s\S]*?\})\s*</tool_call>", re.DOTALL)
     for m in tag_pattern.finditer(content):
         try:
-            parsed = json.loads(m.group(1).strip())
+            raw_j = m.group(1).strip().replace("True", "true").replace("False", "false")
+            parsed = json.loads(raw_j)
             if isinstance(parsed, dict) and ("name" in parsed or "function" in parsed):
                 fn_name = parsed.get("name") or parsed.get("function", {}).get("name")
                 fn_args = parsed.get("arguments") or parsed.get("args") or parsed.get("function", {}).get("arguments", {})
@@ -73,25 +79,90 @@ def extract_tool_calls_from_text(content: str) -> tuple[str, list[dict[str, Any]
         cleaned_content = tag_pattern.sub("", content).strip()
         return cleaned_content, extracted
 
+    # 2. Match conversational tool announcements (e.g. "use the write_file function ... { ... }" or "execute grep_in_files:\n{...}")
+    tool_names = {
+        "write_file", "patch_file", "find_files", "grep_in_files",
+        "read_file", "list_directory", "execute_command", "delete_file",
+        "web_search", "fetch_url"
+    }
+    tool_announcement_regex = re.compile(
+        r"(?:use(?: the)?|execute(?: the)?|call(?: the)?|invok(?:e|ing)(?: the)?)\s+`?([a-z_]+)`?(?:\s+tool|\s+function)?[\s\S]*?(```(?:json)?\s*)?(\{[\s\S]*?\})(\s*```)?",
+        re.IGNORECASE
+    )
+    for m in tool_announcement_regex.finditer(content):
+        t_name = m.group(1).lower().strip()
+        if t_name in tool_names:
+            raw_json = m.group(3).strip().replace("True", "true").replace("False", "false")
+            try:
+                parsed_args = json.loads(raw_json)
+                if isinstance(parsed_args, dict):
+                    extracted.append({
+                        "function": {
+                            "name": t_name,
+                            "arguments": parsed_args
+                        }
+                    })
+            except Exception:
+                pass
+
+    if extracted:
+        cleaned_content = tool_announcement_regex.sub("", content).strip()
+        return cleaned_content, extracted
+
+    # 3. Match JSON blocks with unambiguous parameter signatures
+    json_block_regex = re.compile(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```|(\{[\s\S]*?\})", re.DOTALL)
+    for m in json_block_regex.finditer(content):
+        raw_json_str = (m.group(1) or m.group(2) or "").strip().replace("True", "true").replace("False", "false")
+        if not raw_json_str.startswith("{") or not raw_json_str.endswith("}"):
+            continue
+        try:
+            parsed = json.loads(raw_json_str)
+            if isinstance(parsed, dict):
+                if "name" in parsed and ("arguments" in parsed or "args" in parsed):
+                    fn_name = parsed["name"]
+                    fn_args = parsed.get("arguments") or parsed.get("args") or {}
+                    extracted.append({"function": {"name": fn_name, "arguments": fn_args}})
+                elif "file_path" in parsed and "content" in parsed:
+                    extracted.append({"function": {"name": "write_file", "arguments": parsed}})
+                elif "file_path" in parsed and "search_block" in parsed:
+                    extracted.append({"function": {"name": "patch_file", "arguments": parsed}})
+                elif "pattern" in parsed and ("max_matches" in parsed or "case_sensitive" in parsed or "path" in parsed):
+                    extracted.append({"function": {"name": "grep_in_files", "arguments": parsed}})
+                elif "pattern" in parsed and ("root_dir" in parsed or "*" in str(parsed.get("pattern"))):
+                    extracted.append({"function": {"name": "find_files", "arguments": parsed}})
+                elif "query" in parsed and ("max_results" in parsed or len(parsed) == 1):
+                    extracted.append({"function": {"name": "web_search", "arguments": parsed}})
+                elif "url" in parsed and ("max_chars" in parsed or len(parsed) == 1):
+                    extracted.append({"function": {"name": "fetch_url", "arguments": parsed}})
+                elif "command" in parsed:
+                    extracted.append({"function": {"name": "execute_command", "arguments": parsed}})
+        except Exception:
+            pass
+
+    if extracted:
+        cleaned_content = json_block_regex.sub("", content).strip()
+        return cleaned_content, extracted
+
     return content, []
 
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are Jarvis, a highly capable local AI assistant running on Windows with direct access to tools, memory, and skills.\n"
-    "CRITICAL TOOL USAGE RULES:\n"
-    "1. When creating new files or scripts, ALWAYS write complete, robust, fully-implemented code with proper functions, docstrings, and logic. Invoke 'write_file(file_path=..., content=...)'.\n"
-    "2. When editing or updating code in an existing file, invoke 'patch_file(file_path=..., search_block=..., replacement_block=...)'. If needed, invoke 'read_file' first to see the exact text before patching.\n"
-    "3. When searching for words, functions, classes, definitions, or symbols across the codebase/project, ALWAYS invoke 'grep_in_files(pattern=..., path=...)'. Never say a symbol is missing without running grep_in_files first.\n"
-    "4. When looking for files or directories by name/pattern/extension, ALWAYS invoke 'find_files(pattern=..., root_dir=...)'.\n"
-    "5. When the user asks to search online for real-time web info, live news, or documentation, invoke 'web_search(query=...)'.\n"
-    "6. When the user provides a web URL (http/https), invoke 'fetch_url(url=...)'. Never use read_file for web URLs.\n"
-    "7. When inspecting or reading a local disk file, invoke 'read_file(file_path=...)'.\n"
-    "8. When browsing a directory tree, invoke 'list_directory(path=...)'.\n"
-    "9. When running shell commands, terminal tools, or scripts, invoke 'execute_command(command=...)'.\n"
-    "10. For system uptime or disk usage, invoke 'get_system_uptime' or 'get_disk_usage'.\n"
+    "CRITICAL RULES:\n"
+    "1. NEVER output conversational plans or raw JSON code blocks in your text describing tools you want to run. When an action is needed, directly invoke the tool.\n"
+    "2. When creating new files or scripts, ALWAYS write complete, fully-implemented code with proper functions, docstrings, and logic. Invoke 'write_file(file_path=..., content=...)'.\n"
+    "3. When editing or updating code in an existing file, invoke 'patch_file(file_path=..., search_block=..., replacement_block=...)'. If needed, invoke 'read_file' first to see the exact text before patching.\n"
+    "4. When searching for words, functions, classes, definitions, or symbols across the codebase/project, ALWAYS invoke 'grep_in_files(pattern=..., path=...)'. Never say a symbol is missing without running grep_in_files first.\n"
+    "5. When looking for files or directories by name/pattern/extension, ALWAYS invoke 'find_files(pattern=..., root_dir=...)'.\n"
+    "6. When the user asks to search online for real-time web info, live news, or documentation, invoke 'web_search(query=...)'.\n"
+    "7. When the user provides a web URL (http/https), invoke 'fetch_url(url=...)'. Never use read_file for web URLs.\n"
+    "8. When inspecting or reading a local disk file, invoke 'read_file(file_path=...)'.\n"
+    "9. When browsing a directory tree, invoke 'list_directory(path=...)'.\n"
+    "10. When running shell commands, terminal tools, or scripts, invoke 'execute_command(command=...)'.\n"
     "11. Strip surrounding quotation marks from user queries if present.\n"
     "12. Always use clean relative workspace paths (e.g. '.', 'backend/app', 'scripts', 'docs')."
 )
+
 
 
 
