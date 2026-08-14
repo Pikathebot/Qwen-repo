@@ -11,7 +11,7 @@ def patch_file(file_path: str, search_block: str, replacement_block: str) -> str
     Always use this tool when editing or updating existing code, fixing functions, or changing configuration lines without rewriting entire files.
 
     Args:
-        file_path: Relative path of the file to patch (e.g. 'backend/app/main.py').
+        file_path: Relative path of the file to patch (e.g. 'scripts/test_calc.py', 'backend/app/main.py').
         search_block: The exact existing text snippet/block to find and replace.
         replacement_block: The new replacement text snippet/block.
     """
@@ -20,6 +20,19 @@ def patch_file(file_path: str, search_block: str, replacement_block: str) -> str
         return "Error: File path cannot be empty."
 
     path = Path(clean_path_str)
+
+    # Resolve candidate locations if path is slightly offset
+    if not path.exists():
+        candidates = [
+            Path(".") / clean_path_str,
+            Path("backend") / clean_path_str,
+            Path("scripts") / Path(clean_path_str).name,
+            Path("backend/scripts") / Path(clean_path_str).name,
+        ]
+        for cand in candidates:
+            if cand.exists() and cand.is_file():
+                path = cand
+                break
 
     if not path.exists():
         return f"Error: Cannot patch file '{file_path}' because it does not exist."
@@ -40,10 +53,24 @@ def patch_file(file_path: str, search_block: str, replacement_block: str) -> str
 
         match_count = normalized_current.count(normalized_search)
 
+        # Fallback: whitespace-stripped matching if exact match failed
         if match_count == 0:
+            current_lines = [l.rstrip() for l in normalized_current.splitlines()]
+            search_lines = [l.rstrip() for l in normalized_search.splitlines() if l.strip()]
+            
+            # If search block is 1 line or simple, check if matching line exists
+            if len(search_lines) == 1 and search_lines[0] in current_lines:
+                idx = current_lines.index(search_lines[0])
+                orig_line = normalized_current.splitlines()[idx]
+                normalized_search = orig_line
+                match_count = normalized_current.count(normalized_search)
+
+        if match_count == 0:
+            preview = current_content[:400] + ("..." if len(current_content) > 400 else "")
             return (
                 f"Error: The specified search block was not found in '{file_path}'. "
-                "Ensure exact character matching, indentation, and include surrounding context lines if necessary."
+                f"Current file contents:\n```\n{preview}\n```\n"
+                "Please use the exact content from the file above as your search block."
             )
 
         if match_count > 1:

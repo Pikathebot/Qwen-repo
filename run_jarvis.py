@@ -48,14 +48,16 @@ def start_backend() -> subprocess.Popen:
             "-m", "uvicorn",
             "app.main:app",
             "--host", "127.0.0.1",
-            "--port", "8000"
+            "--port", "8000",
+            "--reload"
         ],
-        cwd=str(BACKEND_DIR),
+        cwd=str(ROOT_DIR),
         env=env,
         stdout=backend_log,
         stderr=backend_log,
         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     )
+
     return proc
 
 
