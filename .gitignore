@@ -22,6 +22,11 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+test_sandbox*/
+
+# App Data & Webview Cache
+data/
+
 
 # OS specific
 .DS_Store

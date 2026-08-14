@@ -6,6 +6,9 @@ from app.agent.tools.list_directory import list_directory
 from app.agent.tools.sample_tools import execute_command, delete_file
 from app.agent.tools.web_search import web_search
 from app.agent.tools.fetch_url import fetch_url
+from app.agent.tools.write_file import write_file
+from app.agent.tools.patch_file import patch_file
+from app.agent.tools.file_search import find_files, grep_in_files
 
 logger = logging.getLogger("jarvis.agent.tools")
 
@@ -16,6 +19,10 @@ TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {
     "delete_file": delete_file,
     "web_search": web_search,
     "fetch_url": fetch_url,
+    "write_file": write_file,
+    "patch_file": patch_file,
+    "find_files": find_files,
+    "grep_in_files": grep_in_files,
 }
 
 AVAILABLE_TOOLS: list[Callable[..., Any]] = [
@@ -25,7 +32,12 @@ AVAILABLE_TOOLS: list[Callable[..., Any]] = [
     delete_file,
     web_search,
     fetch_url,
+    write_file,
+    patch_file,
+    find_files,
+    grep_in_files,
 ]
+
 
 
 

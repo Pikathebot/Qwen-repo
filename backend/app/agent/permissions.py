@@ -22,11 +22,16 @@ class RiskTier(str, Enum):
 BASE_TOOL_RISK_MAP: dict[str, RiskTier] = {
     "read_file": RiskTier.LOW_RISK,
     "list_directory": RiskTier.LOW_RISK,
+    "find_files": RiskTier.LOW_RISK,
+    "grep_in_files": RiskTier.LOW_RISK,
+    "write_file": RiskTier.LOW_RISK,
+    "patch_file": RiskTier.LOW_RISK,
     "web_search": RiskTier.LOW_RISK,
     "fetch_url": RiskTier.LOW_RISK,
     "execute_command": RiskTier.CONFIRMATION_REQUIRED,
     "delete_file": RiskTier.HIGH_RISK,
 }
+
 
 
 # Fast compiled regex patterns for argument-aware dynamic risk analysis
@@ -118,14 +123,44 @@ def evaluate_command_argument_risk(command: str) -> RiskTier:
     return RiskTier.CONFIRMATION_REQUIRED
 
 
-def evaluate_file_path_risk(file_path: str) -> RiskTier:
+WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+
+
+def evaluate_file_path_risk(file_path: str, is_write_or_delete: bool = False) -> RiskTier:
     """
-    Check if a file path targets protected OS system directories.
+    Check if a file path targets protected OS system directories or lies outside the project workspace.
     """
-    norm_path = os.path.normpath(str(file_path)).lower().replace("\\", "/")
+    clean_path_str = str(file_path or "").strip()
+    if not clean_path_str:
+        return RiskTier.LOW_RISK
+
+    norm_path = os.path.normpath(clean_path_str).lower().replace("\\", "/")
+    
+    # 1. Immediate HIGH_RISK check for critical OS directories
     for sys_dir in SYSTEM_CRITICAL_DIRECTORIES:
         if norm_path.startswith(sys_dir):
             return RiskTier.HIGH_RISK
+
+    # 2. Check workspace containment
+    try:
+        resolved = Path(clean_path_str).resolve()
+        workspace_resolved = WORKSPACE_ROOT.resolve()
+        
+        # If the path is inside the project workspace directory -> safe
+        if resolved == workspace_resolved or workspace_resolved in resolved.parents:
+            return RiskTier.LOW_RISK
+        
+        # If it's a clean relative path (e.g. 'scripts/foo.py') -> safe
+        if not os.path.isabs(clean_path_str) and not clean_path_str.startswith(".."):
+            return RiskTier.LOW_RISK
+
+        # If it's an external path and modifying (write/patch/delete), require confirmation
+        if is_write_or_delete:
+            return RiskTier.CONFIRMATION_REQUIRED
+
+    except Exception:
+        pass
+
     return RiskTier.LOW_RISK
 
 
@@ -204,10 +239,16 @@ def evaluate_tool_permission(
     if tool_name == "execute_command":
         cmd = arguments.get("command") or arguments.get("cmd") or arguments.get("command_line") or ""
         effective_tier = evaluate_command_argument_risk(str(cmd))
-    elif tool_name in ("delete_file", "write_file"):
+    elif tool_name in ("delete_file", "write_file", "patch_file"):
         path = arguments.get("file_path") or arguments.get("path") or ""
-        if evaluate_file_path_risk(str(path)) == RiskTier.HIGH_RISK:
+        path_tier = evaluate_file_path_risk(str(path), is_write_or_delete=True)
+        if tool_name == "delete_file":
             effective_tier = RiskTier.HIGH_RISK
+        else:
+            effective_tier = path_tier
+    elif tool_name in ("read_file", "list_directory", "find_files", "grep_in_files"):
+        path = arguments.get("file_path") or arguments.get("path") or arguments.get("root_dir") or ""
+        effective_tier = evaluate_file_path_risk(str(path), is_write_or_delete=False)
     elif tool_name == "fetch_url":
         url = arguments.get("url") or arguments.get("target_url") or arguments.get("link") or ""
         url_tier = evaluate_url_risk(str(url))
@@ -218,6 +259,7 @@ def evaluate_tool_permission(
     path_val = str(arguments.get("file_path") or arguments.get("path") or "")
     path_base = os.path.basename(path_val).strip().lower() if path_val else ""
     if action_id in approved_ids or tool_name in approved_ids or (path_base and path_base in approved_ids):
+
         return PermissionDecision(
             tool=tool_name,
             args=arguments,

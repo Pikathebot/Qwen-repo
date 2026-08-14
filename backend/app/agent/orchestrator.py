@@ -81,13 +81,18 @@ DEFAULT_SYSTEM_PROMPT = (
     "TOOL USAGE RULES:\n"
     "1. When the user asks to search online, look up current news, live facts, latest software releases, or web information, ALWAYS call 'web_search(query=...)'.\n"
     "2. When the user provides a link/URL or asks to read, fetch, or summarize a web page, ALWAYS call 'fetch_url(url=...)'. Never use read_file for web URLs (http/https).\n"
-    "3. When the user asks to inspect, read, check, or view a LOCAL file on disk, invoke 'read_file(file_path=...)'.\n"
-    "4. When the user asks to list, show, or browse files/folders in a local directory, invoke 'list_directory(path=...)'.\n"
-    "5. When the user asks to run terminal commands, inspect system processes, or execute local scripts, invoke 'execute_command(command=...)'. Do NOT use execute_command for web searching.\n"
-    "6. For system uptime or disk space, use the dedicated diagnostics tools ('get_disk_usage', 'get_system_uptime').\n"
-    "7. If a request is purely conversational or asking for advice/explanations, reply directly with helpful text and do NOT call tools unnecessarily.\n"
-    "8. Always use clean relative paths (e.g. '.', 'docs', 'backend/app', 'skills')."
+    "3. When the user asks to create, write, or generate a new file, script, or document, invoke 'write_file(file_path=..., content=...)'.\n"
+    "4. When the user asks to edit, update, or patch existing code in a file, invoke 'patch_file(file_path=..., search_block=..., replacement_block=...)'.\n"
+    "5. When the user asks to find/locate files by pattern or extension, invoke 'find_files(pattern=..., root_dir=...)'.\n"
+    "6. When the user asks to search for words, functions, classes, or code across files, invoke 'grep_in_files(pattern=..., path=...)'.\n"
+    "7. When the user asks to inspect, read, check, or view a LOCAL file on disk, invoke 'read_file(file_path=...)'.\n"
+    "8. When the user asks to list, show, or browse files/folders in a local directory, invoke 'list_directory(path=...)'.\n"
+    "9. When the user asks to run terminal commands, inspect system processes, or execute local scripts, invoke 'execute_command(command=...)'. Do NOT use execute_command for web searching.\n"
+    "10. For system uptime or disk space, use the dedicated diagnostics tools ('get_disk_usage', 'get_system_uptime').\n"
+    "11. If a request is purely conversational or asking for advice/explanations, reply directly with helpful text and do NOT call tools unnecessarily.\n"
+    "12. Always use clean relative paths (e.g. '.', 'docs', 'backend/app', 'scripts')."
 )
+
 
 
 
