@@ -95,6 +95,8 @@ async def lifespan(app: FastAPI):
 
 
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 
 app = FastAPI(
     title="Local Jarvis Assistant API",
@@ -110,6 +112,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+UI_DIR = Path(__file__).resolve().parent.parent.parent / "desktop" / "ui"
+if UI_DIR.exists():
+    app.mount("/ui", StaticFiles(directory=str(UI_DIR), html=True), name="ui")
+
 
 
 def get_ollama_client() -> ollama.AsyncClient:

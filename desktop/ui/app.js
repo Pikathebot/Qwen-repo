@@ -1,4 +1,5 @@
-const API_BASE = "http://127.0.0.1:8000";
+const API_BASE = window.location.origin && window.location.origin.startsWith("http") ? window.location.origin : "http://127.0.0.1:8000";
+
 
 // State
 let activeSessionId = "session_" + Math.random().toString(36).substring(2, 9);

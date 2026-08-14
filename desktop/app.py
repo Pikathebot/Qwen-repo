@@ -33,18 +33,20 @@ class DesktopAPI:
 
 
 def launch_desktop():
-    ui_path = Path(__file__).resolve().parent / "ui" / "index.html"
-    if not ui_path.exists():
-        logger.error("UI HTML not found at %s", ui_path)
-        sys.exit(1)
+    # Cache directory for persistent WebView2 user data & permissions
+    cache_dir = Path(__file__).resolve().parent.parent / "data" / "webview_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # Use secure local HTTP origin so Chromium remembers microphone permissions permanently
+    ui_url = "http://127.0.0.1:8000/ui/index.html"
 
     window_holder = [None]
     api = DesktopAPI(window_holder)
 
-    # 1. Create standard modern windowed desktop app
+    # 1. Create standard modern windowed desktop app with persistent origin
     window = webview.create_window(
         title="Jarvis — Local AI Assistant",
-        url=str(ui_path.as_uri()),
+        url=ui_url,
         js_api=api,
         width=1040,
         height=720,
@@ -88,8 +90,9 @@ def launch_desktop():
 
     logger.info("Jarvis Desktop App ready. Press Alt+Space to summon.")
 
-    # 4. Start GUI Event Loop
-    webview.start(debug=False)
+    # 4. Start GUI Event Loop with persistent storage path
+    webview.start(debug=False, storage_path=str(cache_dir), private_mode=False)
+
 
 
 if __name__ == "__main__":
