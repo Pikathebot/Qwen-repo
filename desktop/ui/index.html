@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jarvis AI Assistant</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Left Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="brand">
+          <div class="brand-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <polygon points="12 8 8 12 12 16 16 12 12 8"></polygon>
+            </svg>
+          </div>
+          <div class="brand-title">Jarvis AI</div>
+        </div>
+        <button class="new-chat-btn" id="newChatBtn" title="Start a new session">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          <span>New Chat</span>
+        </button>
+      </div>
+
+      <!-- Quick Skills -->
+      <div class="sidebar-section">
+        <div class="section-label">Skills & Diagnostics</div>
+        <div class="skill-item" id="skillReviewBtn">
+          <span class="skill-icon">📝</span>
+          <span class="skill-name">Code Review</span>
+        </div>
+        <div class="skill-item" id="skillDiagBtn">
+          <span class="skill-icon">⚡</span>
+          <span class="skill-name">System Diagnostics</span>
+        </div>
+      </div>
+
+      <!-- Recent Sessions -->
+      <div class="sidebar-section sessions-section">
+        <div class="section-label">Recent Sessions</div>
+        <div class="sessions-list" id="sessionsList">
+          <div class="session-item active" id="defaultSessionItem">
+            <span class="session-icon">💬</span>
+            <span class="session-name">Current Session</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sidebar Footer -->
+      <div class="sidebar-footer">
+        <div class="status-badge" id="backendStatusBadge">
+          <span class="status-dot connected" id="statusDot"></span>
+          <span class="status-text" id="statusText">Jarvis Ready</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Chat Workspace -->
+    <main class="main-content">
+      <!-- Top Navigation Header -->
+      <header class="top-nav">
+        <div class="nav-left">
+          <div class="model-select-wrapper">
+            <label for="modelSelect">Model:</label>
+            <select id="modelSelect" class="model-select">
+              <option value="hermes3:8b">Hermes 3 8B (Best Tool Calling)</option>
+              <option value="llama3.1:8b">Llama 3.1 8B (Flagship)</option>
+              <option value="llama3.2:3b">Llama 3.2 3B (Ultra Fast)</option>
+              <option value="phi3.5:3.8b">Phi 3.5 3.8B (Reasoning)</option>
+              <option value="qwen2.5:0.5b">Qwen 2.5 0.5B (Lightweight)</option>
+              <option value="heavy">Heavy Mode (OpenRouter Cloud)</option>
+            </select>
+          </div>
+          <div class="mode-toggle" id="modeToggle">
+            <span class="mode-label">Mode:</span>
+            <span class="mode-pill" id="modePill">Auto</span>
+          </div>
+        </div>
+
+        <div class="nav-right">
+          <!-- Voice Responses Toggle Button -->
+          <button id="voiceToggleBtn" class="voice-toggle-btn active" title="Toggle Voice Responses (TTS)">
+            <span class="voice-icon">🔊</span>
+            <span class="voice-text">Voice: ON</span>
+          </button>
+
+          <!-- Unload Model Button -->
+          <button id="unloadModelBtn" class="unload-btn" title="Instantly unload model and free 100% GPU VRAM">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
+              <line x1="12" y1="2" x2="12" y2="12"></line>
+            </svg>
+            <span>Free VRAM</span>
+          </button>
+
+          <!-- Hardware Telemetry Pill -->
+          <div class="telemetry-card" id="telemetryCard">
+            <span class="telemetry-icon">📊</span>
+            <span id="telemetryDetails">GPU: -- | CPU: --</span>
+          </div>
+        </div>
+      </header>
+
+      <!-- Chat Messages Scroll Area -->
+      <section class="chat-viewport" id="chatViewport">
+        <div class="welcome-hero" id="welcomeHero">
+          <div class="hero-logo">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <polygon points="12 8 8 12 12 16 16 12 12 8"></polygon>
+            </svg>
+          </div>
+          <h1>How can I help you today?</h1>
+          <p>Jarvis runs 100% locally on your RTX 4060 GPU with native tool execution, voice wake-word, and system integration.</p>
+          
+          <div class="suggestion-grid">
+            <div class="suggestion-card" data-prompt="Check system diagnostics, disk usage, and hardware stats.">
+              <div class="sugg-title">⚡ System Status</div>
+              <div class="sugg-desc">Inspect disk usage, uptime, and GPU telemetry</div>
+            </div>
+            <div class="suggestion-card" data-prompt="List all files in the docs directory.">
+              <div class="sugg-title">📁 Workspace Files</div>
+              <div class="sugg-desc">Explore codebase folders and documentation</div>
+            </div>
+            <div class="suggestion-card" data-prompt="Please do a code review of backend/app/main.py.">
+              <div class="sugg-title">🔍 Code Review</div>
+              <div class="sugg-desc">Analyze code quality and security best practices</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Messages Thread -->
+        <div class="messages-container" id="messagesContainer"></div>
+
+        <!-- Loading / Thinking Indicator -->
+        <div class="loading-bubble" id="loadingBubble" style="display: none;">
+          <div class="spinner"></div>
+          <span>Jarvis is thinking...</span>
+        </div>
+
+        <!-- Safety Confirmation Card -->
+        <div class="confirmation-panel" id="confirmationPanel" style="display: none;">
+          <div class="conf-heading">
+            <span class="conf-icon">⚠️</span>
+            <span>Safety Confirmation Required</span>
+          </div>
+          <div class="conf-text" id="confDetailsText">
+            The requested tool execution requires explicit authorization.
+          </div>
+          <div class="conf-buttons">
+            <button class="btn btn-secondary" id="rejectActionBtn">Cancel</button>
+            <button class="btn btn-primary" id="approveActionBtn">Approve & Execute</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Bottom Chat Composer -->
+      <footer class="composer-area">
+        <div class="composer-box">
+          <textarea 
+            id="promptInput" 
+            class="prompt-textarea" 
+            placeholder="Message Jarvis, or ask to run tools..." 
+            rows="1"
+            autofocus
+          ></textarea>
+          <div class="composer-actions">
+            <button id="micBtn" class="action-btn mic-btn" title="Voice Input (Say 'Jarvis' or Click to Speak)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                <line x1="12" y1="19" x2="12" y2="23"></line>
+                <line x1="8" y1="23" x2="16" y2="23"></line>
+              </svg>
+            </button>
+            <button id="sendBtn" class="action-btn send-btn" title="Send message (Enter)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="composer-hints">
+          <span><strong>Enter</strong> to send &bull; <strong>Shift + Enter</strong> for new line &bull; <strong>Alt + Space</strong> to summon/hide</span>
+        </div>
+      </footer>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
