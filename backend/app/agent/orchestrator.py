@@ -299,7 +299,19 @@ class AgentOrchestrator:
 
             # If still no tools were invoked, save assistant message and return
             if not tool_calls:
-                logger.info("No tool calls requested. Returning final model response.")
+                # If tools were executed but the model returned empty content, synthesize final response without tools schema
+                if not content.strip() and tools_used:
+                    logger.info("Tools were executed but model returned empty content. Requesting final synthesis without tools parameter.")
+                    synth_response = await self.ollama_client.chat(
+                        model=model,
+                        messages=messages
+                    )
+                    if isinstance(synth_response, dict):
+                        content = synth_response.get("message", {}).get("content", "") or ""
+                    else:
+                        content = getattr(synth_response.message, "content", "") or ""
+
+                logger.info("No further tool calls requested. Returning final model response.")
                 self.memory_store.append_message(session_id, role="assistant", content=content)
                 return OrchestratorResult(
                     response=content,
@@ -311,6 +323,7 @@ class AgentOrchestrator:
                     fallback_used=False,
                     tools_used=tools_used
                 )
+
 
 
             logger.info("Model requested %d tool call(s)", len(tool_calls))
