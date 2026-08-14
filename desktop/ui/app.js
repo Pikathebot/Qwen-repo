@@ -521,7 +521,19 @@ function initVoice() {
 }
 
 async function startVoiceRecording() {
-  // 1. Try Browser SpeechRecognition if available
+  if (isRecording) {
+    stopVoiceRecording();
+    return;
+  }
+
+  isRecording = true;
+  if (micBtn) micBtn.classList.add("recording");
+  if (promptInput) promptInput.placeholder = "Listening... Speak now...";
+
+  audioChunks = [];
+  let speechRecognizedText = "";
+
+  // 1. Start live browser speech preview if available
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (SpeechRecognition) {
     try {
@@ -535,59 +547,23 @@ async function startVoiceRecording() {
         for (let i = event.resultIndex; i < event.results.length; i++) {
           transcript += event.results[i][0].transcript;
         }
-
-        // Clean wake-word prefixes
-        const lower = transcript.toLowerCase();
-        const wakePrefixes = ["hey jarvis", "ok jarvis", "okay jarvis", "hello jarvis", "jarvis"];
-        let cleaned = transcript;
-        for (const w of wakePrefixes) {
-          if (lower.includes(w)) {
-            const idx = lower.indexOf(w);
-            cleaned = transcript.substring(idx + w.length).trim().replace(/^[,.?! ]+/, "");
-            break;
-          }
-        }
-        if (promptInput) promptInput.value = cleaned || transcript;
-      };
-
-      speechRecognition.onend = () => {
-        isRecording = false;
-        if (micBtn) micBtn.classList.remove("recording");
-        if (promptInput && promptInput.value.trim().length > 0) {
-          handleSubmit();
-        }
+        speechRecognizedText = cleanWakeWord(transcript);
+        if (promptInput) promptInput.value = speechRecognizedText;
       };
 
       speechRecognition.onerror = (e) => {
-        console.debug("SpeechRecognition error, falling back to MediaRecorder:", e);
-        speechRecognition = null;
-        startMediaRecordingFallback();
+        console.debug("SpeechRecognition error:", e);
       };
 
-      if (promptInput) promptInput.value = "";
       speechRecognition.start();
-      isRecording = true;
-      if (micBtn) micBtn.classList.add("recording");
-      return;
-    } catch (err) {
-      console.debug("SpeechRecognition start failed:", err);
-      speechRecognition = null;
+    } catch (e) {
+      console.debug("SpeechRecognition unavailable:", e);
     }
   }
 
-  // 2. Fallback: Native MediaRecorder + Backend Transcribe
-  startMediaRecordingFallback();
-}
-
-async function startMediaRecordingFallback() {
+  // 2. Start robust MediaRecorder stream for backend Whisper
   try {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      alert("Microphone access is not supported or permitted in this window.");
-      return;
-    }
-
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    audioChunks = [];
     mediaRecorder = new MediaRecorder(stream);
 
     mediaRecorder.ondataavailable = (event) => {
@@ -599,24 +575,41 @@ async function startMediaRecordingFallback() {
     mediaRecorder.onstop = async () => {
       isRecording = false;
       if (micBtn) micBtn.classList.remove("recording");
+      if (promptInput) promptInput.placeholder = "Ask Jarvis anything, or use / for skills...";
       stream.getTracks().forEach(track => track.stop());
 
-      if (audioChunks.length > 0) {
+      // If live Web Speech got text, use it; otherwise send recorded audio to local Whisper
+      if (speechRecognizedText && speechRecognizedText.trim().length > 1) {
+        if (promptInput) promptInput.value = speechRecognizedText.trim();
+        handleSubmit();
+      } else if (audioChunks.length > 0) {
         const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
         await sendAudioToBackendTranscribe(audioBlob);
       }
     };
 
-    mediaRecorder.start();
-    isRecording = true;
-    if (micBtn) micBtn.classList.add("recording");
+    mediaRecorder.start(250);
 
   } catch (err) {
     console.error("Microphone capture error:", err);
     isRecording = false;
     if (micBtn) micBtn.classList.remove("recording");
-    alert("Microphone permission was denied or unavailable.");
+    if (promptInput) promptInput.placeholder = "Ask Jarvis anything, or use / for skills...";
   }
+}
+
+function cleanWakeWord(text) {
+  if (!text) return "";
+  const lower = text.toLowerCase();
+  const wakePrefixes = ["hey jarvis", "ok jarvis", "okay jarvis", "hello jarvis", "jarvis"];
+  let cleaned = text;
+  for (const w of wakePrefixes) {
+    if (lower.startsWith(w)) {
+      cleaned = text.substring(w.length).trim().replace(/^[,.?! ]+/, "");
+      break;
+    }
+  }
+  return cleaned || text;
 }
 
 function stopVoiceRecording() {
@@ -646,16 +639,7 @@ async function sendAudioToBackendTranscribe(blob) {
     if (res.ok) {
       const data = await res.json();
       if (data.text && data.text.trim()) {
-        let transcript = data.text.trim();
-        const lower = transcript.toLowerCase();
-        const wakePrefixes = ["hey jarvis", "ok jarvis", "okay jarvis", "hello jarvis", "jarvis"];
-        for (const w of wakePrefixes) {
-          if (lower.includes(w)) {
-            const idx = lower.indexOf(w);
-            transcript = transcript.substring(idx + w.length).trim().replace(/^[,.?! ]+/, "");
-            break;
-          }
-        }
+        const transcript = cleanWakeWord(data.text.trim());
         if (promptInput) promptInput.value = transcript;
         handleSubmit();
       }
@@ -665,6 +649,7 @@ async function sendAudioToBackendTranscribe(blob) {
     console.error("Transcription upload error:", err);
   }
 }
+
 
 // --- Telemetry Poller ---
 function initTelemetry() {
