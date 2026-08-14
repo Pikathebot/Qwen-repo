@@ -40,11 +40,14 @@ DEFAULT_SYSTEM_PROMPT = (
     "TOOL USAGE RULES:\n"
     "1. When the user asks to inspect, read, check, or view a file, invoke 'read_file(file_path=...)' with the exact path.\n"
     "2. When the user asks to list, show, or browse files/folders in a directory, invoke 'list_directory(path=...)'.\n"
-    "3. When the user asks to run terminal commands, inspect system processes, or execute scripts, invoke 'execute_command(command=...)'.\n"
-    "4. For system uptime or disk space, use the dedicated diagnostics tools ('get_disk_usage', 'get_system_uptime').\n"
-    "5. If a request is purely conversational or asking for advice/explanations, reply directly with helpful text and do NOT call tools unnecessarily.\n"
-    "6. Always use clean relative paths (e.g. '.', 'docs', 'backend/app', 'skills')."
+    "3. When the user asks for current news, live facts, latest software releases, or to search online, invoke 'web_search(query=...)'.\n"
+    "4. When the user provides a link/URL or asks to read/summarize a webpage, invoke 'fetch_url(url=...)'.\n"
+    "5. When the user asks to run terminal commands, inspect system processes, or execute scripts, invoke 'execute_command(command=...)'.\n"
+    "6. For system uptime or disk space, use the dedicated diagnostics tools ('get_disk_usage', 'get_system_uptime').\n"
+    "7. If a request is purely conversational or asking for advice/explanations, reply directly with helpful text and do NOT call tools unnecessarily.\n"
+    "8. Always use clean relative paths (e.g. '.', 'docs', 'backend/app', 'skills')."
 )
+
 
 
 class AgentOrchestrator:

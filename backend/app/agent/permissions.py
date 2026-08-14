@@ -1,4 +1,5 @@
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -6,6 +7,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
+
 
 
 class RiskTier(str, Enum):
@@ -19,9 +22,12 @@ class RiskTier(str, Enum):
 BASE_TOOL_RISK_MAP: dict[str, RiskTier] = {
     "read_file": RiskTier.LOW_RISK,
     "list_directory": RiskTier.LOW_RISK,
+    "web_search": RiskTier.LOW_RISK,
+    "fetch_url": RiskTier.LOW_RISK,
     "execute_command": RiskTier.CONFIRMATION_REQUIRED,
     "delete_file": RiskTier.HIGH_RISK,
 }
+
 
 # Fast compiled regex patterns for argument-aware dynamic risk analysis
 SAFE_COMMAND_PREFIXES = (
@@ -123,6 +129,44 @@ def evaluate_file_path_risk(file_path: str) -> RiskTier:
     return RiskTier.LOW_RISK
 
 
+PRIVATE_HOST_NAMES = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal"}
+
+
+def evaluate_url_risk(url: str) -> RiskTier:
+    """
+    Check if a URL targets local/internal private IP addresses or dangerous protocols (SSRF protection).
+    """
+    raw_url = str(url or "").strip()
+    if not raw_url:
+        return RiskTier.LOW_RISK
+
+    try:
+        parsed = urlparse(raw_url if "://" in raw_url else f"https://{raw_url}")
+        scheme = parsed.scheme.lower()
+        if scheme not in ("http", "https"):
+            return RiskTier.HIGH_RISK
+
+        hostname = (parsed.hostname or "").strip().lower()
+        if not hostname:
+            return RiskTier.CONFIRMATION_REQUIRED
+
+        if hostname in PRIVATE_HOST_NAMES or hostname.endswith(".local") or hostname.endswith(".internal"):
+            return RiskTier.CONFIRMATION_REQUIRED
+
+        try:
+            ip = ipaddress.ip_address(hostname)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified:
+                return RiskTier.CONFIRMATION_REQUIRED
+        except ValueError:
+            # Domain name, not an IP literal
+            pass
+
+        return RiskTier.LOW_RISK
+    except Exception:
+        return RiskTier.CONFIRMATION_REQUIRED
+
+
+
 @dataclass
 class PermissionDecision:
     tool: str
@@ -164,6 +208,11 @@ def evaluate_tool_permission(
         path = arguments.get("file_path") or arguments.get("path") or ""
         if evaluate_file_path_risk(str(path)) == RiskTier.HIGH_RISK:
             effective_tier = RiskTier.HIGH_RISK
+    elif tool_name == "fetch_url":
+        url = arguments.get("url") or arguments.get("target_url") or arguments.get("link") or ""
+        url_tier = evaluate_url_risk(str(url))
+        if url_tier != RiskTier.LOW_RISK:
+            effective_tier = url_tier
 
     # 3. Check if user already provided explicit approval token or tool/target approval
     path_val = str(arguments.get("file_path") or arguments.get("path") or "")

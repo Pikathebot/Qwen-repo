@@ -4,6 +4,8 @@ from typing import Callable, Any
 from app.agent.tools.read_file import read_file
 from app.agent.tools.list_directory import list_directory
 from app.agent.tools.sample_tools import execute_command, delete_file
+from app.agent.tools.web_search import web_search
+from app.agent.tools.fetch_url import fetch_url
 
 logger = logging.getLogger("jarvis.agent.tools")
 
@@ -12,6 +14,8 @@ TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {
     "list_directory": list_directory,
     "execute_command": execute_command,
     "delete_file": delete_file,
+    "web_search": web_search,
+    "fetch_url": fetch_url,
 }
 
 AVAILABLE_TOOLS: list[Callable[..., Any]] = [
@@ -19,7 +23,10 @@ AVAILABLE_TOOLS: list[Callable[..., Any]] = [
     list_directory,
     execute_command,
     delete_file,
+    web_search,
+    fetch_url,
 ]
+
 
 
 def execute_tool(tool_name: str, arguments: dict[str, Any]) -> str:
