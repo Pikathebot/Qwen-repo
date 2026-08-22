@@ -6,15 +6,39 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from urllib.parse import urlparse
 
+
+CONFIRMATION_TIMEOUT_ACTION: Literal["deny", "allow"] = "deny"
+
+# Per-tool rate limits per turn (tool_name -> max invocations per turn)
+# Default unset = no per-tool limit beyond MAX_TOOL_CALLS_PER_TURN
+RATE_LIMITS: dict[str, int] = {}
+
+
+def check_rate_limit(tool_name: str, current_turn_tool_count: int) -> bool:
+    """
+    Check per-tool rate limiting independently of global turn caps.
+    Returns True if permitted, False if limit exceeded.
+    """
+    limit = RATE_LIMITS.get(tool_name)
+    if limit is not None and current_turn_tool_count >= limit:
+        return False
+    return True
+
+
+class ChatMode(str, Enum):
+    WORKSPACE = "WORKSPACE"
+    SYSTEM = "SYSTEM"
 
 
 class RiskTier(str, Enum):
     LOW_RISK = "LOW_RISK"
     CONFIRMATION_REQUIRED = "CONFIRMATION_REQUIRED"
     HIGH_RISK = "HIGH_RISK"
+
+
 
 
 # Base hardcoded lookup table mapping tool name -> default RiskTier.
@@ -126,9 +150,14 @@ def evaluate_command_argument_risk(command: str) -> RiskTier:
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
 
-def evaluate_file_path_risk(file_path: str, is_write_or_delete: bool = False) -> RiskTier:
+def evaluate_file_path_risk(
+    file_path: str,
+    is_write_or_delete: bool = False,
+    chat_mode: ChatMode = ChatMode.WORKSPACE
+) -> RiskTier:
     """
     Check if a file path targets protected OS system directories or lies outside the project workspace.
+    Canonicalizes the path, resolves symlinks, and evaluates risk based on ChatMode (WORKSPACE vs SYSTEM).
     """
     clean_path_str = str(file_path or "").strip()
     if not clean_path_str:
@@ -136,32 +165,30 @@ def evaluate_file_path_risk(file_path: str, is_write_or_delete: bool = False) ->
 
     norm_path = os.path.normpath(clean_path_str).lower().replace("\\", "/")
     
-    # 1. Immediate HIGH_RISK check for critical OS directories
+    # 1. Immediate HIGH_RISK check for critical OS directories (always enforced in all modes)
     for sys_dir in SYSTEM_CRITICAL_DIRECTORIES:
         if norm_path.startswith(sys_dir):
             return RiskTier.HIGH_RISK
 
-    # 2. Check workspace containment
+    # 2. Check workspace containment and canonicalization
     try:
         resolved = Path(clean_path_str).resolve()
         workspace_resolved = WORKSPACE_ROOT.resolve()
         
-        # If the path is inside the project workspace directory -> safe
+        # If the path is inside the project workspace directory -> safe in all modes
         if resolved == workspace_resolved or workspace_resolved in resolved.parents:
             return RiskTier.LOW_RISK
         
-        # If it's a clean relative path (e.g. 'scripts/foo.py') -> safe
-        if not os.path.isabs(clean_path_str) and not clean_path_str.startswith(".."):
+        # 3. Path is outside workspace root:
+        # In SYSTEM mode, non-critical paths are LOW_RISK
+        if chat_mode == ChatMode.SYSTEM:
             return RiskTier.LOW_RISK
 
-        # If it's an external path and modifying (write/patch/delete), require confirmation
-        if is_write_or_delete:
-            return RiskTier.CONFIRMATION_REQUIRED
+        # In WORKSPACE mode (or default/fallback): external path requires confirmation
+        return RiskTier.HIGH_RISK if is_write_or_delete else RiskTier.CONFIRMATION_REQUIRED
 
     except Exception:
-        pass
-
-    return RiskTier.LOW_RISK
+        return RiskTier.CONFIRMATION_REQUIRED
 
 
 PRIVATE_HOST_NAMES = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal"}
@@ -222,7 +249,8 @@ class BatchPermissionResult:
 def evaluate_tool_permission(
     tool_name: str,
     arguments: dict[str, Any],
-    approved_action_ids: Optional[list[str]] = None
+    approved_action_ids: Optional[list[str]] = None,
+    chat_mode: ChatMode = ChatMode.WORKSPACE
 ) -> PermissionDecision:
     """
     Evaluate permission for a single tool call.
@@ -238,28 +266,29 @@ def evaluate_tool_permission(
     # 2. Argument-aware dynamic rule optimizations
     if tool_name == "execute_command":
         cmd = arguments.get("command") or arguments.get("cmd") or arguments.get("command_line") or ""
-        effective_tier = evaluate_command_argument_risk(str(cmd))
-    elif tool_name in ("delete_file", "write_file", "patch_file"):
+        cmd_tier = evaluate_command_argument_risk(str(cmd))
+        if base_tier == RiskTier.LOW_RISK or cmd_tier != RiskTier.LOW_RISK:
+            effective_tier = cmd_tier
+    elif tool_name == "delete_file":
+        effective_tier = RiskTier.HIGH_RISK
+    elif tool_name in ("write_file", "patch_file"):
         path = arguments.get("file_path") or arguments.get("path") or ""
-        path_tier = evaluate_file_path_risk(str(path), is_write_or_delete=True)
-        if tool_name == "delete_file":
-            effective_tier = RiskTier.HIGH_RISK
-        else:
+        path_tier = evaluate_file_path_risk(str(path), is_write_or_delete=True, chat_mode=chat_mode)
+        if path_tier != RiskTier.LOW_RISK or base_tier == RiskTier.LOW_RISK:
             effective_tier = path_tier
     elif tool_name in ("read_file", "list_directory", "find_files", "grep_in_files"):
         path = arguments.get("file_path") or arguments.get("path") or arguments.get("root_dir") or ""
-        effective_tier = evaluate_file_path_risk(str(path), is_write_or_delete=False)
+        path_tier = evaluate_file_path_risk(str(path), is_write_or_delete=False, chat_mode=chat_mode)
+        if path_tier != RiskTier.LOW_RISK:
+            effective_tier = path_tier
     elif tool_name == "fetch_url":
         url = arguments.get("url") or arguments.get("target_url") or arguments.get("link") or ""
         url_tier = evaluate_url_risk(str(url))
         if url_tier != RiskTier.LOW_RISK:
             effective_tier = url_tier
 
-    # 3. Check if user already provided explicit approval token or tool/target approval
-    path_val = str(arguments.get("file_path") or arguments.get("path") or "")
-    path_base = os.path.basename(path_val).strip().lower() if path_val else ""
-    if action_id in approved_ids or tool_name in approved_ids or (path_base and path_base in approved_ids):
-
+    # 3. Check if user already provided explicit approval token (strictly per action_id)
+    if action_id in approved_ids:
         return PermissionDecision(
             tool=tool_name,
             args=arguments,
@@ -292,7 +321,8 @@ def evaluate_tool_permission(
 
 def evaluate_tool_calls_batch(
     tool_calls: list[dict[str, Any]],
-    approved_action_ids: Optional[list[str]] = None
+    approved_action_ids: Optional[list[str]] = None,
+    chat_mode: ChatMode = ChatMode.WORKSPACE
 ) -> BatchPermissionResult:
     """
     Batch evaluate multiple tool calls in a single pass to prevent fragmented confirmation prompts.
@@ -303,7 +333,7 @@ def evaluate_tool_calls_batch(
     for tc in tool_calls:
         fn_name = tc.get("name", "")
         fn_args = tc.get("args", {})
-        decision = evaluate_tool_permission(fn_name, fn_args, approved_action_ids)
+        decision = evaluate_tool_permission(fn_name, fn_args, approved_action_ids, chat_mode=chat_mode)
 
         if decision.allowed:
             approved.append(decision)
@@ -316,3 +346,4 @@ def evaluate_tool_calls_batch(
         approved_actions=approved,
         pending_confirmations=pending
     )
+

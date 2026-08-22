@@ -15,8 +15,6 @@ logger = logging.getLogger("jarvis.agent.tools")
 TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {
     "read_file": read_file,
     "list_directory": list_directory,
-    "execute_command": execute_command,
-    "delete_file": delete_file,
     "web_search": web_search,
     "fetch_url": fetch_url,
     "write_file": write_file,
@@ -28,8 +26,6 @@ TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {
 AVAILABLE_TOOLS: list[Callable[..., Any]] = [
     read_file,
     list_directory,
-    execute_command,
-    delete_file,
     web_search,
     fetch_url,
     write_file,
@@ -37,6 +33,81 @@ AVAILABLE_TOOLS: list[Callable[..., Any]] = [
     find_files,
     grep_in_files,
 ]
+
+
+
+from pydantic import BaseModel, Field
+from typing import Optional
+
+
+class ReadFileArgs(BaseModel):
+    file_path: str = Field(..., description="Path to the file to read")
+
+
+class ListDirectoryArgs(BaseModel):
+    path: str = Field(default=".", description="Path of directory to list")
+
+
+class ExecuteCommandArgs(BaseModel):
+    command: str = Field(..., description="Shell command string to execute")
+
+
+class DeleteFileArgs(BaseModel):
+    file_path: str = Field(..., description="Path of file to delete")
+
+
+class WebSearchArgs(BaseModel):
+    query: str = Field(..., description="Search query string")
+    max_results: int = Field(default=5, ge=1, le=10, description="Max results")
+
+
+class FetchUrlArgs(BaseModel):
+    url: str = Field(..., description="Web URL to fetch")
+    max_chars: int = Field(default=8000, ge=500, le=25000, description="Max character budget")
+
+
+class WriteFileArgs(BaseModel):
+    file_path: str = Field(..., description="Target file path")
+    content: str = Field(..., description="Content to write")
+    overwrite: bool = Field(default=True, description="Overwrite if exists")
+
+
+class PatchFileArgs(BaseModel):
+    file_path: str = Field(..., description="Target file path")
+    search_block: str = Field(..., description="Exact code block to replace")
+    replacement_block: str = Field(..., description="New code block")
+
+
+class FindFilesArgs(BaseModel):
+    pattern: str = Field(..., description="File pattern or extension")
+    root_dir: str = Field(default=".", description="Root search directory")
+
+
+class GrepInFilesArgs(BaseModel):
+    pattern: str = Field(..., description="Regex pattern or keyword")
+    path: str = Field(default=".", description="Directory path")
+    max_matches: int = Field(default=50, ge=1, le=200, description="Max match count")
+    case_sensitive: bool = Field(default=True, description="Case sensitivity")
+
+
+TOOL_SCHEMAS: dict[str, type[BaseModel]] = {
+    "read_file": ReadFileArgs,
+    "list_directory": ListDirectoryArgs,
+    "execute_command": ExecuteCommandArgs,
+    "delete_file": DeleteFileArgs,
+    "web_search": WebSearchArgs,
+    "fetch_url": FetchUrlArgs,
+    "write_file": WriteFileArgs,
+    "patch_file": PatchFileArgs,
+    "find_files": FindFilesArgs,
+    "grep_in_files": GrepInFilesArgs,
+}
+
+
+def get_tool_schema(tool_name: str) -> Optional[type[BaseModel]]:
+    """Retrieve Pydantic validation schema for a registered tool."""
+    return TOOL_SCHEMAS.get(tool_name)
+
 
 
 

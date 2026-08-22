@@ -124,15 +124,27 @@ async def test_api_get_mcp_servers():
 @pytest.mark.anyio
 async def test_chat_with_dynamic_skills_matching():
     """Verify that a chat query triggering a skill records the active skill name."""
-    payload = {
-        "message": "Please review code in docs/PLAN.md and check this code.",
-        "session_id": f"test_skill_{uuid.uuid4().hex[:8]}",
-        "model": "qwen2.5:0.5b"
+    mock_resp = {
+        "message": {
+            "role": "assistant",
+            "content": "Code review complete."
+        }
     }
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test", timeout=45.0) as ac:
-        response = await ac.post("/chat", json=payload)
-    
-    assert response.status_code == 200
-    data = response.json()
-    assert "active_skills" in data
-    assert "code_review" in data["active_skills"]
+    class FakeOllama:
+        async def chat(self, *args, **kwargs):
+            return mock_resp
+
+    from unittest.mock import patch
+    with patch("app.main.get_ollama_client", return_value=FakeOllama()):
+        payload = {
+            "message": "Please review code in docs/PLAN.md and check this code.",
+            "session_id": f"test_skill_{uuid.uuid4().hex[:8]}",
+            "model": "qwen2.5:0.5b"
+        }
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test", timeout=10.0) as ac:
+            response = await ac.post("/chat", json=payload)
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert "active_skills" in data
+        assert "code_review" in data["active_skills"]

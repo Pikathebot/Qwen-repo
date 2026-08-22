@@ -4,21 +4,50 @@ import httpx
 from app.main import app
 from app.agent.model_router import ModelRouter, RoutingMode, RoutingDecision
 from app.agent.openrouter_client import OpenRouterClient
+from app.agent.lmstudio_client import LMStudioClient
 from app.agent.orchestrator import AgentOrchestrator
 
 
-# --- Unit Tests for ModelRouter ---
+# --- Unit Tests for ModelRouter (Stage B) ---
 
-def test_router_normal_mode_default():
-    router = ModelRouter(default_mode="auto", ollama_model="qwen3.5:9b", openrouter_heavy_model="heavy-model")
-    decision = router.evaluate("What is the weather like today?")
+def test_router_bonsai_default():
+    """Verify that when active_backend is 'bonsai', Normal Mode routes to LM Studio with Bonsai 27B."""
+    router = ModelRouter(
+        default_mode="auto",
+        active_backend="bonsai",
+        lmstudio_model="prism-ml/bonsai-27b",
+        ollama_model="hermes3:8b",
+        openrouter_heavy_model="heavy-model"
+    )
+    decision = router.evaluate("What is the current time?")
+    assert decision.mode == "normal"
+    assert decision.provider == "lmstudio"
+    assert decision.model == "prism-ml/bonsai-27b"
+
+
+def test_router_hermes3_rollback():
+    """Verify that when active_backend is switched to 'hermes3', Normal Mode routes to Ollama."""
+    router = ModelRouter(
+        default_mode="auto",
+        active_backend="hermes3",
+        lmstudio_model="prism-ml/bonsai-27b",
+        ollama_model="hermes3:8b",
+        openrouter_heavy_model="heavy-model"
+    )
+    decision = router.evaluate("What is the current time?")
     assert decision.mode == "normal"
     assert decision.provider == "ollama"
-    assert decision.model == "qwen3.5:9b"
+    assert decision.model == "hermes3:8b"
 
 
 def test_router_explicit_heavy_mode():
-    router = ModelRouter(default_mode="auto", ollama_model="qwen3.5:9b", openrouter_heavy_model="heavy-model")
+    router = ModelRouter(
+        default_mode="auto",
+        active_backend="bonsai",
+        lmstudio_model="prism-ml/bonsai-27b",
+        ollama_model="hermes3:8b",
+        openrouter_heavy_model="heavy-model"
+    )
     decision = router.evaluate("Hello", requested_mode="heavy")
     assert decision.mode == "heavy"
     assert decision.provider == "openrouter"
@@ -26,28 +55,53 @@ def test_router_explicit_heavy_mode():
 
 
 def test_router_explicit_normal_mode():
-    router = ModelRouter(default_mode="auto", ollama_model="qwen3.5:9b", openrouter_heavy_model="heavy-model")
+    router = ModelRouter(
+        default_mode="auto",
+        active_backend="bonsai",
+        lmstudio_model="prism-ml/bonsai-27b",
+        ollama_model="hermes3:8b",
+        openrouter_heavy_model="heavy-model"
+    )
     decision = router.evaluate("Design a distributed system architecture", requested_mode="normal")
     assert decision.mode == "normal"
-    assert decision.provider == "ollama"
+    assert decision.provider == "lmstudio"
+    assert decision.model == "prism-ml/bonsai-27b"
 
 
 def test_router_heavy_tag_trigger():
-    router = ModelRouter(default_mode="auto", ollama_model="qwen3.5:9b", openrouter_heavy_model="heavy-model")
+    router = ModelRouter(
+        default_mode="auto",
+        active_backend="bonsai",
+        lmstudio_model="prism-ml/bonsai-27b",
+        ollama_model="hermes3:8b",
+        openrouter_heavy_model="heavy-model"
+    )
     decision = router.evaluate("[heavy] please explain this complex quantum equation.")
     assert decision.mode == "heavy"
     assert decision.provider == "openrouter"
 
 
 def test_router_heavy_task_pattern():
-    router = ModelRouter(default_mode="auto", ollama_model="qwen3.5:9b", openrouter_heavy_model="heavy-model")
+    router = ModelRouter(
+        default_mode="auto",
+        active_backend="bonsai",
+        lmstudio_model="prism-ml/bonsai-27b",
+        ollama_model="hermes3:8b",
+        openrouter_heavy_model="heavy-model"
+    )
     decision = router.evaluate("Help me create a system design for a high-availability microservice architecture.")
     assert decision.mode == "heavy"
     assert decision.provider == "openrouter"
 
 
 def test_router_custom_model_override():
-    router = ModelRouter(default_mode="auto", ollama_model="qwen3.5:9b", openrouter_heavy_model="heavy-model")
+    router = ModelRouter(
+        default_mode="auto",
+        active_backend="bonsai",
+        lmstudio_model="prism-ml/bonsai-27b",
+        ollama_model="hermes3:8b",
+        openrouter_heavy_model="heavy-model"
+    )
     decision = router.evaluate("Hello", requested_mode="heavy", requested_model="custom/model-x")
     assert decision.model == "custom/model-x"
 
@@ -63,21 +117,52 @@ def test_openrouter_client_unconfigured_error():
 # --- Integration Tests with FastAPI app ---
 
 @pytest.mark.anyio
-async def test_chat_normal_mode_local_isolation():
-    """Verify that a Normal Mode request runs purely via Ollama with provider='ollama'."""
-    payload = {
-        "message": "Hello, answer with 'TEST_OK'",
-        "mode": "normal",
-        "model": "qwen2.5:0.5b"
+async def test_chat_lmstudio_normal_mode_mocked():
+    """Verify that Normal Mode runs via LM Studio by default."""
+    mock_lmstudio_response = {
+        "message": {
+            "role": "assistant",
+            "content": "Hello from Bonsai 27B running locally in LM Studio.",
+            "tool_calls": None
+        },
+        "raw": {}
     }
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test", timeout=30.0) as ac:
-        response = await ac.post("/chat", json=payload)
-    
-    assert response.status_code == 200
-    data = response.json()
-    assert data["provider"] == "ollama"
-    assert data["fallback_used"] is False
-    assert len(data["response"]) > 0
+
+    with patch.object(LMStudioClient, "chat", new_callable=AsyncMock) as mock_chat:
+        mock_chat.return_value = mock_lmstudio_response
+
+        payload = {
+            "message": "Hello Jarvis",
+            "mode": "normal"
+        }
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test", timeout=30.0) as ac:
+            response = await ac.post("/chat", json=payload)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["provider"] == "lmstudio"
+        assert "Bonsai 27B" in data["response"]
+        assert data["fallback_used"] is False
+
+
+@pytest.mark.anyio
+async def test_chat_lmstudio_fallback_to_ollama_on_error():
+    """Verify that if LM Studio fails, it gracefully falls back to local Ollama."""
+    with patch.object(LMStudioClient, "chat", new_callable=AsyncMock) as mock_lm_chat:
+        mock_lm_chat.side_effect = RuntimeError("LM Studio connection refused.")
+
+        payload = {
+            "message": "Hello, answer with 'TEST_OK'",
+            "mode": "normal"
+        }
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test", timeout=30.0) as ac:
+            response = await ac.post("/chat", json=payload)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["provider"] == "ollama"
+        assert data["fallback_used"] is True
+        assert "Fallback: LM Studio failed" in data["route_reason"]
 
 
 @pytest.mark.anyio
@@ -103,7 +188,7 @@ async def test_chat_heavy_mode_mocked_success():
         }
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test", timeout=30.0) as ac:
             response = await ac.post("/chat", json=payload)
-        
+
         assert response.status_code == 200
         data = response.json()
         assert data["provider"] == "openrouter"
@@ -112,24 +197,19 @@ async def test_chat_heavy_mode_mocked_success():
         mock_chat.assert_awaited_once()
 
 
-@pytest.mark.anyio
-async def test_chat_heavy_mode_fallback_on_error():
-    """Verify graceful fallback to local Ollama if OpenRouter returns rate-limit or network failure."""
-    with patch.object(OpenRouterClient, "chat", new_callable=AsyncMock) as mock_chat:
-        mock_chat.side_effect = RuntimeError("OpenRouter rate limit reached (HTTP 429).")
+def test_router_dynamic_backend_flip_without_reinstantiation(monkeypatch):
+    """Verify that flipping settings.active_model_backend dynamically updates routing decisions without reinstantiating router."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "active_model_backend", "bonsai")
 
-        payload = {
-            "message": "Explain recursion in one sentence.",
-            "mode": "heavy",
-            "model": "qwen2.5:0.5b"
-        }
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test", timeout=30.0) as ac:
-            response = await ac.post("/chat", json=payload)
-        
-        assert response.status_code == 200
-        data = response.json()
-        # Fallback executed on local Ollama
-        assert data["provider"] == "ollama"
-        assert data["fallback_used"] is True
-        assert "Fallback: OpenRouter failed" in data["route_reason"]
-        assert len(data["response"]) > 0
+    router = ModelRouter()
+    d1 = router.evaluate("Hello")
+    assert d1.provider == "lmstudio"
+    assert d1.model == "prism-ml/bonsai-27b"
+
+    # Flip backend dynamically
+    monkeypatch.setattr(settings, "active_model_backend", "hermes3")
+    d2 = router.evaluate("Hello")
+    assert d2.provider == "ollama"
+    assert d2.model == "hermes3:8b"
+

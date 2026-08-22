@@ -7,10 +7,20 @@ import pystray
 logger = logging.getLogger("jarvis.desktop.tray")
 
 
+from pathlib import Path
+
 def create_tray_icon_image(size: int = 64) -> Image.Image:
     """
-    Generate a dynamic geometric icon for Jarvis.
+    Load Jarvis asset icon or dynamically generate geometric icon.
     """
+    asset_path = Path(__file__).resolve().parent / "assets" / "jarvis.png"
+    if asset_path.exists():
+        try:
+            img = Image.open(asset_path).convert("RGBA")
+            return img.resize((size, size), Image.Resampling.LANCZOS)
+        except Exception:
+            pass
+
     image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
     
@@ -22,6 +32,7 @@ def create_tray_icon_image(size: int = 64) -> Image.Image:
     draw.ellipse([(26, 26), (size - 26, size - 26)], fill=(255, 255, 255, 255))
     
     return image
+
 
 
 class JarvisTray:
@@ -56,8 +67,18 @@ class JarvisTray:
 
     def stop(self) -> None:
         if self.icon:
-            self.icon.stop()
+            try:
+                self.icon.stop()
+            except Exception:
+                pass
             self.icon = None
+        if self._thread and self._thread.is_alive():
+            try:
+                self._thread.join(timeout=1.0)
+            except Exception:
+                pass
+            self._thread = None
+
 
     def _on_toggle_clicked(self, icon, item) -> None:
         self.on_toggle()

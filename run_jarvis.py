@@ -8,14 +8,30 @@ import logging
 from pathlib import Path
 import httpx
 
-# Configure paths
-ROOT_DIR = Path(__file__).resolve().parent
+# Configure paths reliably across direct python execution, batch launcher, and PyInstaller exe
+if getattr(sys, "frozen", False):
+    exe_dir = Path(sys.executable).resolve().parent
+    if (exe_dir / "backend").exists():
+        ROOT_DIR = exe_dir
+    elif (exe_dir.parent / "backend").exists():
+        ROOT_DIR = exe_dir.parent
+    else:
+        ROOT_DIR = exe_dir
+else:
+    ROOT_DIR = Path(__file__).resolve().parent
+
 LOG_FILE = ROOT_DIR / "launcher.log"
+BACKEND_DIR = ROOT_DIR / "backend"
+
+# Locate virtualenv python
 VENV_PYTHON = ROOT_DIR / ".venv" / "Scripts" / "python.exe"
 if not VENV_PYTHON.exists():
-    VENV_PYTHON = sys.executable
-
-BACKEND_DIR = ROOT_DIR / "backend"
+    if (ROOT_DIR.parent / ".venv" / "Scripts" / "python.exe").exists():
+        VENV_PYTHON = ROOT_DIR.parent / ".venv" / "Scripts" / "python.exe"
+    else:
+        import shutil
+        found = shutil.which("python.exe")
+        VENV_PYTHON = Path(found) if found else Path(sys.executable)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,17 +57,16 @@ def start_backend() -> subprocess.Popen:
     env["PYTHONPATH"] = f"{BACKEND_DIR};{ROOT_DIR}"
     backend_log = open(ROOT_DIR / "backend.log", "a", encoding="utf-8")
     
-    logger.info("Starting Jarvis FastAPI backend server on http://127.0.0.1:8000 ...")
+    logger.info("Starting Jarvis FastAPI backend server on http://127.0.0.1:8000 ... (Python: %s)", VENV_PYTHON)
     proc = subprocess.Popen(
         [
             str(VENV_PYTHON),
             "-m", "uvicorn",
             "app.main:app",
             "--host", "127.0.0.1",
-            "--port", "8000",
-            "--reload"
+            "--port", "8000"
         ],
-        cwd=str(ROOT_DIR),
+        cwd=str(BACKEND_DIR),
         env=env,
         stdout=backend_log,
         stderr=backend_log,
@@ -70,14 +85,22 @@ def acquire_single_instance_lock(port: int = 57321):
         s.bind(("127.0.0.1", port))
         return s
     except socket.error:
-        logger.warning("Another instance of Jarvis Desktop is already running. Focusing existing instance.")
+        logger.warning("Another instance of Jarvis Desktop is already running. Signaling existing instance to show...")
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_sock:
+                client_sock.settimeout(2.0)
+                client_sock.connect(("127.0.0.1", port))
+                client_sock.sendall(b"SHOW\n")
+            logger.info("Sent focus/show signal to running Jarvis instance.")
+        except Exception as e:
+            logger.debug("Could not signal existing instance: %s", e)
         return None
 
 
 def main():
     lock_socket = acquire_single_instance_lock()
     if lock_socket is None:
-        logger.info("Exiting duplicate launch attempt.")
+        logger.info("Exiting duplicate launch attempt (focus signal sent).")
         sys.exit(0)
 
     backend_proc = None
@@ -98,7 +121,7 @@ def main():
         
         logger.info("Launching Jarvis Desktop UI (Spotlight & System Tray)...")
         from desktop.app import launch_desktop
-        launch_desktop()
+        launch_desktop(lock_socket)
 
     except Exception as e:
         logger.error("Error in Jarvis launcher: %s\n%s", e, traceback.format_exc())
@@ -108,9 +131,16 @@ def main():
             logger.info("Stopping background backend process...")
             try:
                 backend_proc.terminate()
+                backend_proc.wait(timeout=2.0)
+            except Exception:
+                pass
+        if lock_socket:
+            try:
+                lock_socket.close()
             except Exception:
                 pass
 
 
 if __name__ == "__main__":
     main()
+

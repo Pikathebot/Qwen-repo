@@ -105,14 +105,26 @@ async def test_voice_transcribe_endpoint():
 @pytest.mark.anyio
 async def test_chat_with_wake_word_prefix():
     """Verify that a prompt starting with 'Jarvis, ...' executes smoothly and strips wake word."""
-    payload = {
-        "message": "Jarvis, say 'HELLO_VOICE_CONFIRMED'",
-        "model": "qwen2.5:0.5b"
+    mock_resp = {
+        "message": {
+            "role": "assistant",
+            "content": "HELLO_VOICE_CONFIRMED"
+        }
     }
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test", timeout=30.0) as ac:
-        response = await ac.post("/chat", json=payload)
-    
-    assert response.status_code == 200
-    data = response.json()
-    assert "response" in data
-    assert len(data["response"]) > 0
+    class FakeOllama:
+        async def chat(self, *args, **kwargs):
+            return mock_resp
+
+    from unittest.mock import patch
+    with patch("app.main.get_ollama_client", return_value=FakeOllama()):
+        payload = {
+            "message": "Jarvis, say 'HELLO_VOICE_CONFIRMED'",
+            "model": "qwen2.5:0.5b"
+        }
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test", timeout=10.0) as ac:
+            response = await ac.post("/chat", json=payload)
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert "response" in data
+        assert "HELLO_VOICE_CONFIRMED" in data["response"]

@@ -32,9 +32,12 @@ class GlobalHotkeyListener:
         if self._listener:
             try:
                 self._listener.stop()
+                if hasattr(self._listener, "join"):
+                    self._listener.join(timeout=1.0)
             except Exception:
                 pass
             self._listener = None
+
 
     def _handle_hotkey(self) -> None:
         logger.info("Global hotkey triggered.")

@@ -36,11 +36,11 @@ class AudioTranscriber:
         Transcribe raw audio bytes (webm, wav, etc.) into clean text.
         """
         if not audio_data or len(audio_data) == 0:
-            return {"text": "", "duration_seconds": 0.0, "confidence": 0.0}
+            return {"text": "", "duration_seconds": 0.0, "confidence": 0.0, "format": format}
 
         model = self._get_model()
         if model is None:
-            return {"text": "", "duration_seconds": 0.0, "confidence": 0.0, "error": "Whisper unavailable"}
+            return {"text": "", "duration_seconds": 0.0, "confidence": 0.0, "format": format, "error": "Whisper unavailable"}
 
         # Write to temporary file for whisper ingestion
         suffix = f".{format}" if not format.startswith(".") else format

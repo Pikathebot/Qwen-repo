@@ -28,6 +28,12 @@ test_sandbox*/
 data/
 
 
+# Build & packaging
+build/
+dist/
+*.spec
+*.zip
+
 # OS specific
 .DS_Store
 Thumbs.db

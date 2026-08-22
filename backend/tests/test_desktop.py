@@ -59,3 +59,50 @@ def test_desktop_api_bridge():
     api = DesktopAPI(holder)
     # Should not raise exception
     api.hide_window()
+
+
+def test_desktop_redesign_components():
+    base_dir = Path(__file__).resolve().parent.parent.parent
+    ui_dir = base_dir / "desktop" / "ui"
+
+    html = (ui_dir / "index.html").read_text(encoding="utf-8")
+    css = (ui_dir / "styles.css").read_text(encoding="utf-8")
+    js = (ui_dir / "app.js").read_text(encoding="utf-8")
+
+    # 1. Mode Toggle & Active Project DOM
+    assert "chatScopeToggle" in html
+    assert "modeWorkspaceBtn" in html
+    assert "modeSystemBtn" in html
+    assert "activeProjectIndicator" in html
+    assert "active-project-name" in html
+
+    # 2. Top Nav Model Tier & Governor Pill
+    assert "modelSelect" in html
+    assert "activeTierBadge" in html
+    assert "governorPill" in html
+    assert "governorTooltip" in html
+
+
+    # 3. Empty State Mode Aware Elements
+    assert "empty-state" in html
+    assert "empty-state-title" in html
+    assert "empty-state-subtitle" in html
+
+    # 4. CSS Design Tokens
+    assert "--governor-normal" in css
+    assert "--governor-throttled" in css
+    assert "--governor-paused" in css
+    assert "--governor-disconnected" in css
+    assert "governor-pill--disconnected" in css
+    assert "--tier-1-color" in css
+    assert "--tier-2-color" in css
+    assert "--tier-3-color" in css
+
+    # 5. JS Handlers
+    assert "setChatMode" in js
+    assert "updateModelTierBadge" in js
+    assert "currentMode" in js
+    assert "pollGovernor" in js
+    assert "model_unloaded" in js
+
+

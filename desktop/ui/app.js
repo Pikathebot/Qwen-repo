@@ -4,6 +4,8 @@ const API_BASE = window.location.origin && window.location.origin.startsWith("ht
 // State
 let activeSessionId = "session_" + Math.random().toString(36).substring(2, 9);
 let routingMode = "auto";
+let currentMode = "WORKSPACE";
+let isConversationStarted = false;
 let isProcessing = false;
 let isRecording = false;
 let isVoiceReplyEnabled = true;
@@ -20,10 +22,32 @@ const voiceToggleBtn = document.getElementById("voiceToggleBtn");
 const modelSelect = document.getElementById("modelSelect");
 const modeToggle = document.getElementById("modeToggle");
 const modePill = document.getElementById("modePill");
+
+// Mode & Sidebar Elements
+const modeWorkspaceBtn = document.getElementById("modeWorkspaceBtn");
+const modeSystemBtn = document.getElementById("modeSystemBtn");
+const activeProjectIndicator = document.getElementById("activeProjectIndicator");
+const activeProjectName = document.getElementById("active-project-name");
+const sessionGroupHeader = document.getElementById("sessionGroupHeader");
+
+// Top Nav Elements
+const activeModelName = document.getElementById("activeModelName");
+const activeTierBadge = document.getElementById("activeTierBadge");
+const governorPill = document.getElementById("governorPill");
+const governorPillLabel = document.getElementById("governor-pill__label");
+const govGpuVal = document.getElementById("govGpuVal");
+const govVramVal = document.getElementById("govVramVal");
+const govCpuVal = document.getElementById("govCpuVal");
+const govRamVal = document.getElementById("govRamVal");
+
+// Chat Viewport Elements
 const newChatBtn = document.getElementById("newChatBtn");
 const sessionsList = document.getElementById("sessionsList");
 const chatViewport = document.getElementById("chatViewport");
 const welcomeHero = document.getElementById("welcomeHero");
+const emptyStateTitle = document.getElementById("empty-state-title");
+const emptyStateSubtitle = document.getElementById("empty-state-subtitle");
+const suggWorkspaceCard = document.getElementById("suggWorkspaceCard");
 const messagesContainer = document.getElementById("messagesContainer");
 const loadingBubble = document.getElementById("loadingBubble");
 const confirmationPanel = document.getElementById("confirmationPanel");
@@ -32,7 +56,6 @@ const approveActionBtn = document.getElementById("approveActionBtn");
 const rejectActionBtn = document.getElementById("rejectActionBtn");
 const statusDot = document.getElementById("statusDot");
 const statusText = document.getElementById("statusText");
-const telemetryDetails = document.getElementById("telemetryDetails");
 const skillReviewBtn = document.getElementById("skillReviewBtn");
 const skillDiagBtn = document.getElementById("skillDiagBtn");
 const unloadModelBtn = document.getElementById("unloadModelBtn");
@@ -42,6 +65,8 @@ document.addEventListener("DOMContentLoaded", () => {
   initUI();
   initVoice();
   initTelemetry();
+  updateModelTierBadge();
+  setChatMode(currentMode, false);
 });
 
 function initUI() {
@@ -79,6 +104,19 @@ function initUI() {
     modeToggle.addEventListener("click", () => cycleRoutingMode());
   }
 
+  // Sidebar Mode Segmented Buttons
+  if (modeWorkspaceBtn) {
+    modeWorkspaceBtn.addEventListener("click", () => setChatMode("WORKSPACE", true));
+  }
+  if (modeSystemBtn) {
+    modeSystemBtn.addEventListener("click", () => setChatMode("SYSTEM", true));
+  }
+
+  // Model Dropdown Change Listener
+  if (modelSelect) {
+    modelSelect.addEventListener("change", () => updateModelTierBadge());
+  }
+
   // Safety Confirmation Buttons
   if (approveActionBtn) {
     approveActionBtn.addEventListener("click", () => handleApproveAction());
@@ -89,6 +127,7 @@ function initUI() {
       pendingActionIds = [];
     });
   }
+
 
   // Voice Toggle Button
   if (voiceToggleBtn) {
@@ -170,6 +209,7 @@ async function handleSubmit(approvedTokens = null) {
   if (isProcessing) return;
 
   isProcessing = true;
+  isConversationStarted = true;
   if (sendBtn) sendBtn.style.opacity = "0.5";
   if (welcomeHero) welcomeHero.style.display = "none";
   if (confirmationPanel) confirmationPanel.style.display = "none";
@@ -193,11 +233,12 @@ async function handleSubmit(approvedTokens = null) {
     session_id: activeSessionId,
     model: isHeavy ? null : selectedModel,
     mode: isHeavy ? "heavy" : routingMode,
+    chat_mode: currentMode,
     approved_action_ids: approvedTokens
   };
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 90000); // 90s safety timeout
+  const timeoutId = setTimeout(() => controller.abort(), 180000); // 180s safety timeout for deep reasoning
 
   try {
     const response = await fetch(`${API_BASE}/chat`, {
@@ -252,7 +293,68 @@ async function handleSubmit(approvedTokens = null) {
   }
 }
 
-// --- Session & Mode Controls ---
+// --- Mode & Model Controls ---
+function setChatMode(mode, fromUserClick = false) {
+  if (isConversationStarted && fromUserClick) {
+    // Mode is locked for active conversation
+    const alertMsg = "Mode is locked for the current chat session. Start a 'New Chat' to switch mode.";
+    if (window.confirm ? confirm(alertMsg + "\n\nWould you like to start a new chat now?") : false) {
+      startNewSession();
+      setChatMode(mode, false);
+    }
+    return;
+  }
+
+  currentMode = mode;
+
+  if (mode === "WORKSPACE") {
+    if (modeWorkspaceBtn) modeWorkspaceBtn.classList.add("mode-toggle__option--active");
+    if (modeSystemBtn) modeSystemBtn.classList.remove("mode-toggle__option--active");
+    if (activeProjectIndicator) activeProjectIndicator.style.display = "flex";
+    if (emptyStateTitle) emptyStateTitle.textContent = "Working in " + (activeProjectName ? activeProjectName.textContent : "JARVIS core");
+    if (emptyStateSubtitle) emptyStateSubtitle.textContent = "Workspace mode — writes stay inside this folder";
+    if (suggWorkspaceCard) suggWorkspaceCard.style.display = "block";
+    if (sessionGroupHeader) sessionGroupHeader.textContent = "Workspace Chats";
+  } else {
+    if (modeSystemBtn) modeSystemBtn.classList.add("mode-toggle__option--active");
+    if (modeWorkspaceBtn) modeWorkspaceBtn.classList.remove("mode-toggle__option--active");
+    if (activeProjectIndicator) activeProjectIndicator.style.display = "none";
+    if (emptyStateTitle) emptyStateTitle.textContent = "System mode";
+    if (emptyStateSubtitle) emptyStateSubtitle.textContent = "Full PC access — confirmation required outside safe paths";
+    if (suggWorkspaceCard) suggWorkspaceCard.style.display = "none";
+    if (sessionGroupHeader) sessionGroupHeader.textContent = "System Chats";
+  }
+}
+
+function updateModelTierBadge() {
+  if (!modelSelect || !activeTierBadge) return;
+
+  const val = modelSelect.value;
+  if (val === "qwen2.5:0.5b") {
+    if (activeModelName) activeModelName.textContent = "Qwen 2.5 0.5B";
+    activeTierBadge.className = "tier-badge tier-badge--1";
+    activeTierBadge.textContent = "Tier 1 · fast";
+  } else if (val === "heavy") {
+    if (activeModelName) activeModelName.textContent = "Cloud LLM";
+    activeTierBadge.className = "tier-badge tier-badge--3";
+    activeTierBadge.textContent = "Tier 3 · cloud";
+  } else {
+    // Local Tier 2 flagship models
+    const nameMap = {
+      "prism-ml/bonsai-27b": "Bonsai 27B",
+      "bonsai-27b": "Bonsai 27B",
+      "hermes3:8b": "Hermes 3 8B",
+      "llama3.1:8b": "Llama 3.1 8B",
+      "llama3.2:3b": "Llama 3.2 3B",
+      "phi3.5:3.8b": "Phi 3.5 3.8B"
+    };
+    if (activeModelName) activeModelName.textContent = nameMap[val] || val;
+    activeTierBadge.className = "tier-badge tier-badge--2";
+    activeTierBadge.textContent = "Tier 2 · local";
+  }
+}
+
+
 function cycleRoutingMode() {
   const modes = ["auto", "normal", "heavy"];
   const nextIdx = (modes.indexOf(routingMode) + 1) % modes.length;
@@ -264,15 +366,19 @@ function cycleRoutingMode() {
 
 function startNewSession() {
   activeSessionId = "session_" + Math.random().toString(36).substring(2, 9);
+  isConversationStarted = false;
+
   if (messagesContainer) messagesContainer.innerHTML = "";
   if (welcomeHero) welcomeHero.style.display = "flex";
   if (confirmationPanel) confirmationPanel.style.display = "none";
   if (loadingBubble) loadingBubble.style.display = "none";
 
+  setChatMode(currentMode, false);
+
   if (sessionsList) {
     const item = document.createElement("div");
     item.className = "session-item active";
-    item.innerHTML = `<span class="session-icon">💬</span><span class="session-name">Chat ${activeSessionId.substring(8)}</span>`;
+    item.innerHTML = `<span class="session-icon">💬</span><span class="session-name">${currentMode === "WORKSPACE" ? "📁" : "💻"} Chat ${activeSessionId.substring(8)}</span>`;
     
     document.querySelectorAll(".session-item").forEach(el => el.classList.remove("active"));
     sessionsList.prepend(item);
@@ -287,6 +393,7 @@ function startNewSession() {
 }
 
 // --- Message Rendering ---
+
 function appendUserMessage(text) {
   if (!messagesContainer) return;
   const row = document.createElement("div");
@@ -663,20 +770,48 @@ async function pollGovernor() {
     const res = await fetch(`${API_BASE}/governor/status`);
     if (res.ok) {
       const data = await res.json();
+      
+      // Update sidebar status badge
       if (statusDot) statusDot.className = data.throttled ? "status-dot throttled" : "status-dot connected";
       if (statusText) statusText.textContent = data.throttled ? "Throttled (Load)" : "Jarvis Ready";
 
+      // Update top bar Governor Pill state (4 distinct states)
+      if (governorPill) {
+        if (data.model_unloaded) {
+          governorPill.className = "governor-pill governor-pill--paused";
+          if (governorPillLabel) governorPillLabel.textContent = "Governor: paused";
+        } else if (data.throttled) {
+          governorPill.className = "governor-pill governor-pill--throttled";
+          if (governorPillLabel) governorPillLabel.textContent = "Governor: high load";
+        } else {
+          governorPill.className = "governor-pill governor-pill--normal";
+          if (governorPillLabel) governorPillLabel.textContent = "Governor: normal";
+        }
+      }
+
+      // Update Hover Tooltip Telemetry Metrics
       const m = data.metrics || {};
-      const gpuText = m.gpu_available ? `GPU: ${Math.round(m.gpu_util_percent || 0)}%` : "GPU: N/A";
-      const cpuText = `CPU: ${Math.round(m.cpu_percent || 0)}%`;
-      const vramText = m.vram_used_mb ? `VRAM: ${(m.vram_used_mb / 1024).toFixed(1)}GB` : "";
-      if (telemetryDetails) telemetryDetails.textContent = `${gpuText} | ${cpuText} ${vramText ? "| " + vramText : ""}`;
+      if (govGpuVal) govGpuVal.textContent = m.gpu_available ? `${Math.round(m.gpu_util_percent || 0)}%` : "N/A";
+      if (govVramVal) govVramVal.textContent = m.vram_used_mb ? `${(m.vram_used_mb / 1024).toFixed(1)} GB` : "N/A";
+      if (govCpuVal) govCpuVal.textContent = `${Math.round(m.cpu_percent || 0)}%`;
+      if (govRamVal) govRamVal.textContent = m.ram_percent ? `${Math.round(m.ram_percent)}%` : "N/A";
+
     } else {
       if (statusDot) statusDot.className = "status-dot";
       if (statusText) statusText.textContent = "Offline";
+      if (governorPill) {
+        governorPill.className = "governor-pill governor-pill--disconnected";
+        if (governorPillLabel) governorPillLabel.textContent = "Governor: offline";
+      }
     }
   } catch {
     if (statusDot) statusDot.className = "status-dot";
     if (statusText) statusText.textContent = "Offline";
+    if (governorPill) {
+      governorPill.className = "governor-pill governor-pill--disconnected";
+      if (governorPillLabel) governorPillLabel.textContent = "Governor: offline";
+    }
   }
 }
+
+

@@ -36,26 +36,59 @@ HEAVY_TAG_PREFIXES = (
 @dataclass
 class RoutingDecision:
     mode: str  # "normal" | "heavy"
-    provider: str  # "ollama" | "openrouter"
+    provider: str  # "lmstudio" | "ollama" | "openrouter"
     model: str
     reason: str
 
 
 class ModelRouter:
     """
-    Determines execution destination: Normal Mode (local Ollama) vs Heavy Mode (OpenRouter).
+    Determines execution destination: Normal Mode (local LM Studio Bonsai / Ollama Hermes3) vs Heavy Mode (OpenRouter).
     Enforces deterministic evaluation rules and complete local isolation for Normal Mode.
     """
 
     def __init__(
         self,
         default_mode: str = "auto",
+        active_backend: Optional[str] = None,
+        lmstudio_model: Optional[str] = None,
         ollama_model: Optional[str] = None,
         openrouter_heavy_model: Optional[str] = None
     ):
         self.default_mode = default_mode
+        self._active_backend = active_backend.lower().strip() if active_backend else None
+        self.lmstudio_model = lmstudio_model or getattr(settings, "lmstudio_model", "prism-ml/bonsai-27b")
         self.ollama_model = ollama_model or settings.ollama_model
         self.openrouter_heavy_model = openrouter_heavy_model or settings.openrouter_heavy_model
+
+    @property
+    def active_backend(self) -> str:
+        if self._active_backend is not None:
+            return self._active_backend
+        return getattr(settings, "active_model_backend", "bonsai").lower().strip()
+
+    @active_backend.setter
+    def active_backend(self, value: Optional[str]) -> None:
+        self._active_backend = value.lower().strip() if value else None
+
+    def _resolve_normal_target(self, requested_model: Optional[str] = None) -> tuple[str, str, str]:
+        """
+        Determine provider and model for Normal Mode based on active backend and overrides.
+        Returns (provider, model, backend_name).
+        """
+        if requested_model:
+            if requested_model == self.ollama_model or ":" in requested_model:
+                return "ollama", requested_model, f"Ollama ({requested_model})"
+            elif requested_model == self.lmstudio_model:
+                return "lmstudio", requested_model, f"LM Studio ({requested_model})"
+            else:
+                provider = "lmstudio" if self.active_backend == "bonsai" else "ollama"
+                return provider, requested_model, f"{provider} ({requested_model})"
+
+        if self.active_backend == "bonsai":
+            return "lmstudio", self.lmstudio_model, f"LM Studio ({self.lmstudio_model})"
+        else:
+            return "ollama", self.ollama_model, f"Ollama ({self.ollama_model})"
 
     def evaluate(
         self,
@@ -81,12 +114,12 @@ class ModelRouter:
 
         # 2. Explicit Mode: NORMAL
         if mode_str == RoutingMode.NORMAL.value:
-            target_model = requested_model or self.ollama_model
+            provider, target_model, label = self._resolve_normal_target(requested_model)
             return RoutingDecision(
                 mode="normal",
-                provider="ollama",
+                provider=provider,
                 model=target_model,
-                reason="Explicitly requested Normal Mode via request parameters."
+                reason=f"Explicitly requested Normal Mode ({label}) via request parameters."
             )
 
         # 3. AUTO Mode: Check explicit prompt tags
@@ -113,11 +146,11 @@ class ModelRouter:
                     reason=f"Matched complex reasoning task pattern: '{match.group(0)}'."
                 )
 
-        # 5. Default fallback for Auto: NORMAL Mode (local Ollama)
-        target_model = requested_model or self.ollama_model
+        # 5. Default fallback for Auto: NORMAL Mode (local LM Studio Bonsai or Ollama rollback)
+        provider, target_model, label = self._resolve_normal_target(requested_model)
         return RoutingDecision(
             mode="normal",
-            provider="ollama",
+            provider=provider,
             model=target_model,
-            reason="Standard complexity query routed to local Ollama (Normal Mode)."
+            reason=f"Standard complexity query routed to local {label} (Normal Mode)."
         )

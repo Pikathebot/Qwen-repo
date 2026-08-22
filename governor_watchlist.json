@@ -1,0 +1,12 @@
+[
+  {
+    "match": "cyberpunk2077.exe",
+    "match_type": "exact",
+    "label": "Cyberpunk 2077"
+  },
+  {
+    "match": "helldivers2.exe",
+    "match_type": "exact",
+    "label": "Helldivers 2"
+  }
+]

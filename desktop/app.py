@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+import socket
 from pathlib import Path
 import webview
 
@@ -32,7 +33,7 @@ class DesktopAPI:
             self._window_holder[0].minimize()
 
 
-def launch_desktop():
+def launch_desktop(lock_socket: socket.socket = None):
     # Cache directory for persistent WebView2 user data & permissions
     cache_dir = Path(__file__).resolve().parent.parent / "data" / "webview_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -59,8 +60,14 @@ def launch_desktop():
     )
     window_holder[0] = window
 
-    # 2. Window Toggle Function
+    # 2. Window Toggle & Show Functions
     is_visible = [True]
+
+    def show_window():
+        if window_holder[0]:
+            window_holder[0].show()
+            window_holder[0].restore()
+            is_visible[0] = True
 
     def toggle_window():
         if window_holder[0]:
@@ -88,9 +95,27 @@ def launch_desktop():
     hotkey_listener = GlobalHotkeyListener(on_trigger=toggle_window)
     hotkey_listener.start()
 
+    # 4. Listen on single-instance lock socket for focus/show requests
+    if lock_socket:
+        import threading
+        def _socket_listener():
+            try:
+                lock_socket.listen(5)
+                while True:
+                    conn, _ = lock_socket.accept()
+                    with conn:
+                        data = conn.recv(128)
+                        if b"SHOW" in data:
+                            show_window()
+            except Exception:
+                pass
+
+        listener_thread = threading.Thread(target=_socket_listener, daemon=True)
+        listener_thread.start()
+
     logger.info("Jarvis Desktop App ready. Press Alt+Space to summon.")
 
-    # 4. Start GUI Event Loop with persistent storage path
+    # 5. Start GUI Event Loop with persistent storage path
     webview.start(debug=False, storage_path=str(cache_dir), private_mode=False)
 
 
