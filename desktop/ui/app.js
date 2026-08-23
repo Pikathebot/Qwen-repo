@@ -33,8 +33,20 @@ const sessionGroupHeader = document.getElementById("sessionGroupHeader");
 // Top Nav Elements
 const activeModelName = document.getElementById("activeModelName");
 const activeTierBadge = document.getElementById("activeTierBadge");
+const governorWidgetContainer = document.getElementById("governorWidgetContainer");
 const governorPill = document.getElementById("governorPill");
 const governorPillLabel = document.getElementById("governor-pill__label");
+const governorCommandPanel = document.getElementById("governorCommandPanel");
+const panelStatusTag = document.getElementById("panelStatusTag");
+const govPauseResumeBtn = document.getElementById("govPauseResumeBtn");
+const govPauseResumeIcon = document.getElementById("govPauseResumeIcon");
+const govPauseResumeLabel = document.getElementById("govPauseResumeLabel");
+const govOverride5mBtn = document.getElementById("govOverride5mBtn");
+const govCustomDurationInput = document.getElementById("govCustomDurationInput");
+const govCustomOverrideBtn = document.getElementById("govCustomOverrideBtn");
+const govForceReloadBtn = document.getElementById("govForceReloadBtn");
+const govClearErrorBtn = document.getElementById("govClearErrorBtn");
+const govHistoryList = document.getElementById("govHistoryList");
 const govGpuVal = document.getElementById("govGpuVal");
 const govVramVal = document.getElementById("govVramVal");
 const govCpuVal = document.getElementById("govCpuVal");
@@ -172,6 +184,117 @@ function initUI() {
           if (label) label.textContent = "Free VRAM";
           unloadModelBtn.style.opacity = "1";
         }, 2000);
+      }
+    });
+  }
+
+  // --- Governor Command Panel & Overrides ---
+  if (governorPill && governorWidgetContainer) {
+    governorPill.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const isOpen = governorWidgetContainer.classList.toggle("open");
+      if (isOpen) {
+        fetchGovernorHistory();
+      }
+    });
+
+    // Close panel on click outside
+    document.addEventListener("click", (e) => {
+      if (governorWidgetContainer.classList.contains("open") && !governorWidgetContainer.contains(e.target)) {
+        governorWidgetContainer.classList.remove("open");
+      }
+    });
+
+    // Prevent clicks inside panel from closing it
+    if (governorCommandPanel) {
+      governorCommandPanel.addEventListener("click", (e) => e.stopPropagation());
+    }
+  }
+
+  // Governor Action Buttons
+  if (govPauseResumeBtn) {
+    govPauseResumeBtn.addEventListener("click", async () => {
+      const isPaused = govPauseResumeBtn.classList.contains("active-resume");
+      const endpoint = isPaused ? "/governor/resume" : "/governor/pause";
+      try {
+        govPauseResumeBtn.style.opacity = "0.6";
+        await fetch(`${API_BASE}${endpoint}`, { method: "POST" });
+        await pollGovernor();
+        await fetchGovernorHistory();
+      } catch (err) {
+        console.error("Governor pause/resume error:", err);
+      } finally {
+        govPauseResumeBtn.style.opacity = "1";
+      }
+    });
+  }
+
+  if (govOverride5mBtn) {
+    govOverride5mBtn.addEventListener("click", async () => {
+      try {
+        govOverride5mBtn.style.opacity = "0.6";
+        await fetch(`${API_BASE}/governor/resume-override`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ duration_seconds: 300 })
+        });
+        await pollGovernor();
+        await fetchGovernorHistory();
+      } catch (err) {
+        console.error("Governor override error:", err);
+      } finally {
+        govOverride5mBtn.style.opacity = "1";
+      }
+    });
+  }
+
+  if (govCustomOverrideBtn && govCustomDurationInput) {
+    govCustomOverrideBtn.addEventListener("click", async () => {
+      const mins = parseFloat(govCustomDurationInput.value) || 15;
+      const seconds = Math.max(10, mins * 60);
+      try {
+        govCustomOverrideBtn.style.opacity = "0.6";
+        await fetch(`${API_BASE}/governor/resume-override`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ duration_seconds: seconds })
+        });
+        await pollGovernor();
+        await fetchGovernorHistory();
+      } catch (err) {
+        console.error("Governor custom override error:", err);
+      } finally {
+        govCustomOverrideBtn.style.opacity = "1";
+      }
+    });
+  }
+
+  if (govForceReloadBtn) {
+    govForceReloadBtn.addEventListener("click", async () => {
+      try {
+        govForceReloadBtn.style.opacity = "0.6";
+        await fetch(`${API_BASE}/governor/force-reload`, { method: "POST" });
+        await pollGovernor();
+        await fetchGovernorHistory();
+      } catch (err) {
+        console.error("Governor force reload error:", err);
+      } finally {
+        govForceReloadBtn.style.opacity = "1";
+      }
+    });
+  }
+
+  if (govClearErrorBtn) {
+    govClearErrorBtn.addEventListener("click", async () => {
+      try {
+        govClearErrorBtn.style.opacity = "0.6";
+        await fetch(`${API_BASE}/governor/clear-error`, { method: "POST" });
+        await pollGovernor();
+        await fetchGovernorHistory();
+      } catch (err) {
+        console.error("Governor clear error error:", err);
+      } finally {
+        govClearErrorBtn.style.opacity = "1";
       }
     });
   }
@@ -761,7 +884,7 @@ async function sendAudioToBackendTranscribe(blob) {
 
 // --- Telemetry Poller ---
 function initTelemetry() {
-  setInterval(pollGovernor, 2500);
+  setInterval(pollGovernor, 2000);
   pollGovernor();
 }
 
@@ -770,22 +893,88 @@ async function pollGovernor() {
     const res = await fetch(`${API_BASE}/governor/status`);
     if (res.ok) {
       const data = await res.json();
+      const st = (data.status || "IDLE").toUpperCase();
       
       // Update sidebar status badge
-      if (statusDot) statusDot.className = data.throttled ? "status-dot throttled" : "status-dot connected";
-      if (statusText) statusText.textContent = data.throttled ? "Throttled (Load)" : "Jarvis Ready";
+      if (statusDot) {
+        statusDot.className = (st === "PAUSED" || st === "UNLOADED" || st === "ERROR") ? "status-dot throttled" : "status-dot connected";
+      }
+      if (statusText) {
+        if (st === "PAUSED") statusText.textContent = "Paused (External App/Manual)";
+        else if (st === "UNLOADED") statusText.textContent = "VRAM Unloaded";
+        else if (st === "ERROR") statusText.textContent = "Governor Error";
+        else if (st === "LOADING") statusText.textContent = "Loading Model...";
+        else if (st === "RUNNING") statusText.textContent = "Jarvis Active";
+        else statusText.textContent = "Jarvis Ready";
+      }
 
-      // Update top bar Governor Pill state (4 distinct states)
+      // Update Governor Pill 6-Tier Class & Arc Ring
       if (governorPill) {
-        if (data.model_unloaded) {
-          governorPill.className = "governor-pill governor-pill--paused";
-          if (governorPillLabel) governorPillLabel.textContent = "Governor: paused";
-        } else if (data.throttled) {
-          governorPill.className = "governor-pill governor-pill--throttled";
-          if (governorPillLabel) governorPillLabel.textContent = "Governor: high load";
+        governorPill.className = "governor-pill";
+        if (st === "IDLE") governorPill.classList.add("governor-pill--idle");
+        else if (st === "RUNNING") governorPill.classList.add("governor-pill--running");
+        else if (st === "LOADING") governorPill.classList.add("governor-pill--loading");
+        else if (st === "PAUSED") governorPill.classList.add("governor-pill--paused");
+        else if (st === "UNLOADED") governorPill.classList.add("governor-pill--unloaded");
+        else if (st === "ERROR") governorPill.classList.add("governor-pill--error");
+        else governorPill.classList.add("governor-pill--idle");
+
+        // Dynamic Pill Label (Countdown if override is active)
+        if (governorPillLabel) {
+          if (data.is_manual_override && data.override_expires_at) {
+            const nowSec = Date.now() / 1000;
+            const remaining = Math.max(0, Math.round(data.override_expires_at - nowSec));
+            if (remaining > 0) {
+              const mins = Math.floor(remaining / 60);
+              const secs = remaining % 60;
+              governorPillLabel.textContent = `Override: ${mins}m ${secs < 10 ? '0' : ''}${secs}s`;
+            } else {
+              governorPillLabel.textContent = `Governor: ${st.toLowerCase()}`;
+            }
+          } else if (data.is_manual_override) {
+            governorPillLabel.textContent = "Override: active";
+          } else if (st === "LOADING") {
+            governorPillLabel.textContent = "Governor: loading...";
+          } else {
+            governorPillLabel.textContent = `Governor: ${st.toLowerCase()}`;
+          }
+        }
+      }
+
+      // Update Command Panel Status Tag
+      if (panelStatusTag) {
+        panelStatusTag.textContent = st;
+        panelStatusTag.className = `gov-panel__status-tag tag-${st.toLowerCase()}`;
+      }
+
+      // Update Pause / Resume Button State
+      if (govPauseResumeBtn && govPauseResumeLabel && govPauseResumeIcon) {
+        const isPausedOrOverridden = st === "PAUSED" || data.manual_override_active;
+        if (isPausedOrOverridden) {
+          govPauseResumeBtn.classList.add("active-resume");
+          govPauseResumeIcon.className = "ti ti-player-play";
+          govPauseResumeLabel.textContent = "Resume";
         } else {
-          governorPill.className = "governor-pill governor-pill--normal";
-          if (governorPillLabel) governorPillLabel.textContent = "Governor: normal";
+          govPauseResumeBtn.classList.remove("active-resume");
+          govPauseResumeIcon.className = "ti ti-player-pause";
+          govPauseResumeLabel.textContent = "Pause";
+        }
+      }
+
+      // Contextual Action Visibility
+      if (govForceReloadBtn) {
+        if (data.model_unloaded || data.pending_reload) {
+          govForceReloadBtn.classList.remove("hidden");
+        } else {
+          govForceReloadBtn.classList.add("hidden");
+        }
+      }
+
+      if (govClearErrorBtn) {
+        if (st === "ERROR") {
+          govClearErrorBtn.classList.remove("hidden");
+        } else {
+          govClearErrorBtn.classList.add("hidden");
         }
       }
 
@@ -796,22 +985,72 @@ async function pollGovernor() {
       if (govCpuVal) govCpuVal.textContent = `${Math.round(m.cpu_percent || 0)}%`;
       if (govRamVal) govRamVal.textContent = m.ram_percent ? `${Math.round(m.ram_percent)}%` : "N/A";
 
-    } else {
-      if (statusDot) statusDot.className = "status-dot";
-      if (statusText) statusText.textContent = "Offline";
-      if (governorPill) {
-        governorPill.className = "governor-pill governor-pill--disconnected";
-        if (governorPillLabel) governorPillLabel.textContent = "Governor: offline";
+      // If command panel is open, auto-refresh history
+      if (governorWidgetContainer && governorWidgetContainer.classList.contains("open")) {
+        fetchGovernorHistory();
       }
+
+    } else {
+      setDisconnectedUI();
     }
   } catch {
-    if (statusDot) statusDot.className = "status-dot";
-    if (statusText) statusText.textContent = "Offline";
-    if (governorPill) {
-      governorPill.className = "governor-pill governor-pill--disconnected";
-      if (governorPillLabel) governorPillLabel.textContent = "Governor: offline";
-    }
+    setDisconnectedUI();
   }
 }
+
+function setDisconnectedUI() {
+  if (statusDot) statusDot.className = "status-dot";
+  if (statusText) statusText.textContent = "Offline";
+  if (governorPill) {
+    governorPill.className = "governor-pill governor-pill--disconnected";
+    if (governorPillLabel) governorPillLabel.textContent = "Governor: offline";
+  }
+  if (panelStatusTag) {
+    panelStatusTag.textContent = "OFFLINE";
+    panelStatusTag.className = "gov-panel__status-tag tag-paused";
+  }
+}
+
+async function fetchGovernorHistory() {
+  if (!govHistoryList) return;
+  try {
+    const res = await fetch(`${API_BASE}/governor/history?limit=10`);
+    if (!res.ok) return;
+    const events = await res.json();
+    if (!Array.isArray(events) || events.length === 0) {
+      govHistoryList.innerHTML = '<div class="gov-history-empty">No transition events recorded.</div>';
+      return;
+    }
+
+    const now = Date.now() / 1000;
+    govHistoryList.innerHTML = events.map(e => {
+      const diff = Math.max(0, Math.round(now - e.timestamp));
+      let timeStr = "just now";
+      if (diff >= 60) {
+        timeStr = `${Math.floor(diff / 60)}m ago`;
+      } else if (diff > 0) {
+        timeStr = `${diff}s ago`;
+      }
+
+      const toSt = (e.to_status || "IDLE").toLowerCase();
+      const reasonsStr = Array.isArray(e.raw_reasons) && e.raw_reasons.length > 0 
+        ? e.raw_reasons.join("; ") 
+        : "automatic transition";
+
+      return `
+        <div class="gov-history-item hist-${toSt}">
+          <div class="gov-hist-header">
+            <span>${e.from_status || 'IDLE'} → ${e.to_status || 'IDLE'}</span>
+            <span class="gov-hist-time">${timeStr}</span>
+          </div>
+          <div class="gov-hist-reasons" title="${reasonsStr}">${reasonsStr}</div>
+        </div>
+      `;
+    }).join("");
+  } catch (err) {
+    console.error("Error fetching governor history:", err);
+  }
+}
+
 
 

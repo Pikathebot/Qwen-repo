@@ -255,6 +255,7 @@ class GovernorStatusResponse(BaseModel):
     throttle_reasons: list[str] = []
     is_manual_override: bool = False
     manual_override_active: bool = False
+    override_expires_at: Optional[float] = None
     pending_reload: bool = False
     active_activities: list[str] = []
     model_unloaded: bool = False
@@ -332,6 +333,7 @@ async def governor_status():
         throttle_reasons=metrics.throttle_reasons,
         is_manual_override=governor.is_manual_override,
         manual_override_active=governor.manual_override_active,
+        override_expires_at=governor.override_expires_at,
         pending_reload=governor.pending_reload,
         active_activities=governor.active_activity_types,
         model_unloaded=governor.model_unloaded,
@@ -380,6 +382,24 @@ async def governor_resume_override(req: Optional[GovernorResumeOverrideRequest] 
     duration = req.duration_seconds if req else None
     governor.force_resume_ignore_metrics(duration_seconds=duration)
     return {"status": "ok", "governor_status": governor.status.value, "duration_seconds": duration}
+
+
+@app.post("/governor/clear-error")
+async def governor_clear_error():
+    """Clears governor error state, restoring automated governance."""
+    governor.clear_error()
+    return {"status": "ok", "governor_status": governor.status.value}
+
+
+@app.post("/governor/force-reload")
+async def governor_force_reload():
+    """Manually triggers model reload into GPU VRAM."""
+    initiated = governor.force_reload()
+    return {
+        "status": "ok" if initiated else "noop",
+        "governor_status": governor.status.value,
+        "initiated": initiated
+    }
 
 
 @app.get("/governor/history")

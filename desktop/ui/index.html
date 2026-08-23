@@ -120,15 +120,84 @@
             <span>Free VRAM</span>
           </button>
 
-          <!-- Governor Status Pill with Hover Tooltip -->
-          <div class="governor-pill governor-pill--normal" id="governorPill" title="Hover for detailed hardware telemetry">
-            <span class="governor-pill__dot"></span>
-            <span id="governor-pill__label">Governor: normal</span>
-            <div class="governor-tooltip" id="governorTooltip">
-              <div class="gov-metric"><span>GPU:</span> <span class="metric-val" id="govGpuVal">0%</span></div>
-              <div class="gov-metric"><span>VRAM:</span> <span class="metric-val" id="govVramVal">0.0 GB</span></div>
-              <div class="gov-metric"><span>CPU:</span> <span class="metric-val" id="govCpuVal">0%</span></div>
-              <div class="gov-metric"><span>RAM:</span> <span class="metric-val" id="govRamVal">0%</span></div>
+          <!-- Governor Status Pill with Arc Ring & Command Panel -->
+          <div class="governor-widget-container" id="governorWidgetContainer">
+            <div class="governor-pill governor-pill--idle" id="governorPill" title="Hover for telemetry, Click for Governor Control">
+              <div class="governor-arc-ring" id="governorArcRing">
+                <span class="arc-segment arc-segment--idle" title="IDLE"></span>
+                <span class="arc-segment arc-segment--running" title="RUNNING"></span>
+                <span class="arc-segment arc-segment--loading" title="LOADING"></span>
+                <span class="arc-segment arc-segment--paused" title="PAUSED"></span>
+                <span class="arc-segment arc-segment--unloaded" title="UNLOADED"></span>
+                <span class="arc-segment arc-segment--error" title="ERROR"></span>
+                <span class="arc-center-dot"></span>
+              </div>
+              <span id="governor-pill__label">Governor: idle</span>
+              <i class="ti ti-chevron-down pill-chevron" id="governorPillChevron"></i>
+              
+              <!-- Hover Telemetry Tooltip -->
+              <div class="governor-tooltip" id="governorTooltip">
+                <div class="gov-metric"><span>GPU:</span> <span class="metric-val" id="govGpuVal">0%</span></div>
+                <div class="gov-metric"><span>VRAM:</span> <span class="metric-val" id="govVramVal">0.0 GB</span></div>
+                <div class="gov-metric"><span>CPU:</span> <span class="metric-val" id="govCpuVal">0%</span></div>
+                <div class="gov-metric"><span>RAM:</span> <span class="metric-val" id="govRamVal">0%</span></div>
+              </div>
+            </div>
+
+            <!-- Slide-down Command Panel -->
+            <div class="governor-command-panel" id="governorCommandPanel">
+              <div class="gov-panel__header">
+                <div class="gov-panel__title">
+                  <i class="ti ti-shield-bolt"></i>
+                  <span>Resource Governor</span>
+                </div>
+                <span class="gov-panel__status-tag tag-idle" id="panelStatusTag">IDLE</span>
+              </div>
+
+              <!-- Controls Section -->
+              <div class="gov-panel__section">
+                <div class="gov-section__label">MANUAL OVERRIDES</div>
+                <div class="gov-btn-group">
+                  <button id="govPauseResumeBtn" class="gov-btn gov-btn--toggle">
+                    <i class="ti ti-player-pause" id="govPauseResumeIcon"></i>
+                    <span id="govPauseResumeLabel">Pause</span>
+                  </button>
+                  <button id="govOverride5mBtn" class="gov-btn gov-btn--override">
+                    <i class="ti ti-clock-bolt"></i>
+                    <span>Override 5m</span>
+                  </button>
+                </div>
+                
+                <div class="gov-custom-row">
+                  <input type="number" id="govCustomDurationInput" class="gov-duration-input" placeholder="Min" min="1" max="1440" value="15">
+                  <button id="govCustomOverrideBtn" class="gov-btn gov-btn--secondary">
+                    <span>Custom Min</span>
+                  </button>
+                </div>
+
+                <!-- Contextual Action Buttons -->
+                <div class="gov-contextual-actions">
+                  <button id="govForceReloadBtn" class="gov-btn gov-btn--reload hidden">
+                    <i class="ti ti-refresh"></i>
+                    <span>Force Reload Model</span>
+                  </button>
+                  <button id="govClearErrorBtn" class="gov-btn gov-btn--danger hidden">
+                    <i class="ti ti-alert-triangle"></i>
+                    <span>Clear Governor Error</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Transitions History Timeline -->
+              <div class="gov-panel__section gov-panel__section--history">
+                <div class="gov-section__label">
+                  <span>TRANSITION HISTORY</span>
+                  <span class="gov-history__refresh-hint">Last 10 events</span>
+                </div>
+                <div class="gov-history-list" id="govHistoryList">
+                  <div class="gov-history-empty">No transition events recorded.</div>
+                </div>
+              </div>
             </div>
           </div>
         </div>

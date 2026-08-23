@@ -81,7 +81,11 @@ def test_desktop_redesign_components():
     assert "activeTierBadge" in html
     assert "governorPill" in html
     assert "governorTooltip" in html
-
+    assert "governorArcRing" in html
+    assert "governorCommandPanel" in html
+    assert "govPauseResumeBtn" in html
+    assert "govOverride5mBtn" in html
+    assert "govHistoryList" in html
 
     # 3. Empty State Mode Aware Elements
     assert "empty-state" in html
@@ -92,6 +96,10 @@ def test_desktop_redesign_components():
     assert "--governor-normal" in css
     assert "--governor-throttled" in css
     assert "--governor-paused" in css
+    assert "--governor-idle" in css
+    assert "--governor-running" in css
+    assert "--governor-loading" in css
+    assert "--governor-error" in css
     assert "--governor-disconnected" in css
     assert "governor-pill--disconnected" in css
     assert "--tier-1-color" in css
@@ -103,6 +111,7 @@ def test_desktop_redesign_components():
     assert "updateModelTierBadge" in js
     assert "currentMode" in js
     assert "pollGovernor" in js
+    assert "fetchGovernorHistory" in js
     assert "model_unloaded" in js
 
 

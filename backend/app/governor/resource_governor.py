@@ -376,6 +376,13 @@ class ResourceGovernor:
         return self._pending_reload
 
     @property
+    def override_expires_at(self) -> Optional[float]:
+        """Returns the unix timestamp when timed override expires, or None if not active."""
+        if self._is_resume_override_active and self._manual_resume_override_until != float("inf"):
+            return self._manual_resume_override_until
+        return None
+
+    @property
     def is_manual_override(self) -> bool:
         """Returns True only when a timed override is currently active (not expired)."""
         return self._is_resume_override_active
@@ -449,6 +456,27 @@ class ResourceGovernor:
         logger.info("Governor manually RESUMED (automatic mode restored)")
         self._check_status_transition(trigger_reasons=["manual resume: restored automated governance"])
 
+    def clear_error(self) -> None:
+        """Clears governor error state, restoring normal governance."""
+        self._error_state = False
+        self._error_reason = None
+        logger.info("Governor error state cleared manually.")
+        self._check_status_transition(trigger_reasons=["error cleared manually"])
+
+    def force_reload(self) -> bool:
+        """
+        Manually triggers model reload into GPU VRAM.
+        Returns True if reload was initiated, False if model is already resident / no-op.
+        """
+        if not self.model_unloaded and not self.pending_reload and not self._error_state:
+            logger.info("Governor force_reload ignored: Model is already loaded and resident in VRAM.")
+            return False
+        logger.info("Governor force_reload invoked manually.")
+        self._pending_reload = True
+        settle_delay = 0.5 if bool(self._external_apps_active) else 0.1
+        self._trigger_reload_callback(vram_settle_delay_seconds=settle_delay)
+        return True
+
     def force_resume_ignore_metrics(self, duration_seconds: Optional[float] = None) -> None:
         """
         Forces governor to report healthy/IDLE regardless of load.
@@ -497,7 +525,7 @@ class ResourceGovernor:
                 if not self.model_unloaded:
                     self._pending_reload = True
                     if self.on_reload:
-                        self._trigger_reload_callback(vram_settle_delay_seconds=0.1)
+                        self._trigger_reload_callback(vram_settle_delay_seconds=0.5)
                 self._check_status_transition(trigger_reasons=[f"external app closed: {label}"])
             else:
                 remaining = ", ".join(sorted(self._external_apps_active.keys()))

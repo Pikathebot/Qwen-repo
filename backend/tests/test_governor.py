@@ -426,7 +426,7 @@ async def test_unload_reason_tracker_expiry_and_disjoint_state():
 
         # 3. External app closes -> unload reason cleared and reload triggered
         gov.report_external_app("DaVinci Resolve", present=False)
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.6)
         assert gov.model_unloaded is False
         assert gov.status == GovernorStatus.IDLE
         assert len(reloaded_called) >= 1
@@ -564,12 +564,40 @@ async def test_api_governor_status_and_overrides():
         assert override_res.status_code == 200
         assert override_res.json()["governor_status"] == "IDLE"
 
+        # Verify status endpoint returns override_expires_at
+        status_override = (await ac.get("/governor/status")).json()
+        assert status_override["is_manual_override"] is True
+        assert status_override["override_expires_at"] is not None
+
         # 4. POST /governor/resume
         resume_res = await ac.post("/governor/resume")
         assert resume_res.status_code == 200
         assert resume_res.json()["governor_status"] == "IDLE"
 
-        # 5. GET /governor/history
+        # 5. POST /governor/clear-error
+        governor._error_state = True
+        governor._error_reason = "simulated error"
+        assert governor.status == GovernorStatus.ERROR
+        clear_res = await ac.post("/governor/clear-error")
+        assert clear_res.status_code == 200
+        assert clear_res.json()["governor_status"] == "IDLE"
+        assert governor.status == GovernorStatus.IDLE
+
+        # 6. POST /governor/force-reload
+        # Guard test: when healthy and not unloaded -> returns noop
+        reload_noop = await ac.post("/governor/force-reload")
+        assert reload_noop.status_code == 200
+        assert reload_noop.json()["status"] == "noop"
+        assert reload_noop.json()["initiated"] is False
+
+        # When pending_reload or unloaded -> returns ok and initiated True
+        governor._pending_reload = True
+        reload_res = await ac.post("/governor/force-reload")
+        assert reload_res.status_code == 200
+        assert reload_res.json()["status"] == "ok"
+        assert reload_res.json()["initiated"] is True
+
+        # 7. GET /governor/history
         hist_res = await ac.get("/governor/history?limit=10")
         assert hist_res.status_code == 200
         events = hist_res.json()
@@ -598,4 +626,87 @@ async def test_api_models_load_wrapped_in_governor_activity():
     assert len(observed_statuses) == 1
     assert observed_statuses[0] == GovernorStatus.LOADING
     assert governor.status == GovernorStatus.IDLE
+
+
+def test_override_expires_at_and_manual_recovery_methods():
+    """Verify override_expires_at, clear_error(), and force_reload() methods."""
+    reloads = []
+
+    def mock_reload():
+        reloads.append(True)
+
+    gov = ResourceGovernor(enabled=True, on_reload=mock_reload)
+
+    # 1. override_expires_at
+    assert gov.override_expires_at is None
+    gov.force_resume_ignore_metrics(duration_seconds=60.0)
+    assert gov.override_expires_at is not None
+    assert gov.override_expires_at > time.time()
+    gov.force_resume()
+    assert gov.override_expires_at is None
+
+    # 2. clear_error()
+    gov._error_state = True
+    gov._error_reason = "fatal test failure"
+    gov._check_status_transition()
+    assert gov.status == GovernorStatus.ERROR
+    gov.clear_error()
+    assert gov.status == GovernorStatus.IDLE
+    history = gov.get_history(limit=1)
+    assert history[0].to_status == "IDLE"
+    assert "error cleared manually" in history[0].raw_reasons[0]
+
+    # 3. force_reload() with state guard
+    assert len(reloads) == 0
+    # Guard: IDLE and not unloaded -> early return False (noop)
+    res_noop = gov.force_reload()
+    assert res_noop is False
+    assert len(reloads) == 0
+    assert gov.pending_reload is False
+
+    # When pending_reload or model_unloaded is True -> executes reload
+    gov._pending_reload = True
+    res_ok = gov.force_reload()
+    assert res_ok is True
+    assert len(reloads) == 1
+    assert gov.pending_reload is False
+
+
+@pytest.mark.anyio
+async def test_retry_counter_local_isolation_across_invocations():
+    """Verify that every _trigger_reload_callback gets a fresh 3-attempt retry loop."""
+    attempts = []
+
+    async def fail_then_succeed_on_new_invocation():
+        attempts.append(time.time())
+        # First 3 attempts fail
+        if len(attempts) <= 3:
+            raise RuntimeError("Transient CUDA memory lock")
+        return True
+
+    gov = ResourceGovernor(enabled=True, on_reload=fail_then_succeed_on_new_invocation)
+
+    # 1. First invocation: fails all 3 attempts -> enters ERROR
+    gov._pending_reload = True
+    gov._trigger_reload_callback(vram_settle_delay_seconds=0.01)
+    await asyncio.sleep(4.0)
+
+    assert len(attempts) == 3
+    assert gov.status == GovernorStatus.ERROR
+    assert gov.pending_reload is False
+
+    # 2. Clear error & invoke force_reload: gets a brand new 3-attempt cycle
+    gov.clear_error()
+    assert gov.status == GovernorStatus.IDLE
+
+    # Force reload triggers fresh cycle: attempt 4 succeeds!
+    gov._pending_reload = True
+    gov.force_reload()
+    await asyncio.sleep(0.3)
+
+    assert len(attempts) == 4
+    assert gov.status == GovernorStatus.IDLE
+    assert gov.pending_reload is False
+
+
 
