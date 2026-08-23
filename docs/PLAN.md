@@ -1,6 +1,6 @@
 # Jarvis Assistant — System Master Plan & Autonomous Evolution
 
-**Stack:** FastAPI + Ollama (`qwen3.5:9b` / `qwen2.5:0.5b`) + OpenRouter (Heavy Mode & Vision fallback)  
+**Stack:** FastAPI + LM Studio (`prism-ml/bonsai-27b` default) + Ollama (`hermes3:8b` rollback target) + OpenRouter (Heavy Mode & Vision fallback) + `faster-whisper` Local STT  
 **Target Machine:** Windows 11, Intel i7-14700HX (20 threads), NVIDIA RTX 4060 Laptop GPU (8GB VRAM), 16GB DDR5 RAM  
 **Repository:** `d:/JARVIS`  
 
@@ -8,7 +8,7 @@
 
 ## 0. Project Vision & Architecture Comparison
 
-Jarvis is a private, lightning-fast, hardware-governed AI assistant for Windows. Following our design interview, Jarvis is evolving into an autonomous, proactive, multi-channel personal assistant comparable to **OpenClaw** (formerly Warelay / Moltbot), **Open Interpreter**, and **Claude Computer Use**, while preserving its local privacy, deterministic safety permissions, and RTX 4060 GPU governor.
+Jarvis is a private, lightning-fast, hardware-governed AI assistant for Windows. Jarvis is evolving into an autonomous, proactive, multi-channel personal assistant comparable to **OpenClaw** (formerly Warelay / Moltbot), **Open Interpreter**, and **Claude Computer Use**, while preserving its local privacy, deterministic safety permissions, and RTX 4060 GPU governor.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -30,8 +30,8 @@ Jarvis is a private, lightning-fast, hardware-governed AI assistant for Windows.
 │  │  ┌─────────────────────────┐  ┌────────────────────────────────────┐  │  │
 │  │  │   Web & Research Engine │  │     File & Workspace Engine        │  │  │
 │  │  │   • DuckDuckGo Search   │  │     • write_file                   │  │  │
-│  │  │   • Fast HTML Scraper   │  │     • patch_file                   │  │  │
-│  │  │   • Playwright Dynamic  │  │     • search_files (grep/glob)     │  │  │
+│  │  │   • Fast HTML Scraper   │  │     • patch_file (fuzzy fallback)  │  │  │
+│  │  │   • Dynamic URL Stream  │  │     • file_search (grep / glob)    │  │  │
 │  │  └─────────────────────────┘  └────────────────────────────────────┘  │  │
 │  │  ┌─────────────────────────┐  ┌────────────────────────────────────┐  │  │
 │  │  │  Windows OS Power Tools │  │   Long-Term Memory & Local RAG     │  │  │
@@ -52,138 +52,101 @@ Jarvis is a private, lightning-fast, hardware-governed AI assistant for Windows.
 
 ---
 
-## 1. Resolved Design Tree Decisions (Grill-Me Alignment)
+## 1. Resolved Design Decisions & Core Capabilities
 
-| Decision Area | Agreed Architecture | Rationale |
+| Subsystem Area | Current Implementation Status | Key Technical Specifications |
 | :--- | :--- | :--- |
-| **Remote Access Channel** | **Telegram Bot with Admin ID Whitelist** | Secure mobile access from anywhere, push notifications, and inline approval buttons for blocked actions. |
-| **Web Research Architecture** | **Hybrid (Zero-Key DuckDuckGo + Fast Scraper + Playwright Fallback)** | Free, private, lightweight search by default via `ddgs` + `httpx`, falling back to Playwright for dynamic JS pages. |
-| **File Safety Boundaries** | **Workspace-Aware Gating** | Auto-permits safe read/writes inside designated project folders; blocks and asks confirmation for paths outside workspace or in system directories. |
-| **Vision Strategy** | **Unified / Smart Multimodal Routing** | Prevents VRAM swapping churn on the 8GB RTX 4060 GPU while enabling multi-monitor screenshot diagnostics. |
-| **Long-Term Memory** | **Hybrid Local RAG (SQLite FTS5 + LanceDB / Chroma)** | High-precision exact keyword search combined with dense vector semantic search over user notes and docs. |
-| **Autonomous Engine** | **Dual Scheduler (Preset Routines + Natural Language Reminders)** | Morning briefings and health monitors alongside on-the-fly conversational timers ("Remind me in 30 mins"). |
-| **Windows Desktop Controls** | **Core Desktop Power Tools** | Native app launcher, audio/media keys, active clipboard, process manager, and Windows Toast notifications. |
-| **Skills System** | **Enhanced Hybrid Skills** | Markdown files with YAML metadata declaring required tools, trigger keywords, and step-by-step execution workflows. |
+| **Model Backend (Stage B)** | **LM Studio `bonsai-27b` + Ollama `hermes3:8b` Rollback** | OpenAI function-calling format, deep reasoning support, automatic `lms` CLI VRAM eviction, and fallback to Hermes 3 / OpenRouter. |
+| **Governor V2 (Stages 1–3)** | **Activity-Aware, Debounced, Overridable & ProcessWatcher** | 6-tier status (`IDLE`, `RUNNING`, `LOADING`, `PAUSED`, `UNLOADED`, `ERROR`), 50-event history buffer, `ProcessWatcher` for gaming/heavy app detection, manual overrides (`/pause`, `/resume`, `/resume-override`), manual reload/clear error, and Desktop Command Panel. |
+| **Foundation Hardening (Stage A)** | **Validator, Loop-Breaker & Turn Cap** | Pydantic schema validation, `CallHistory` duplicate call suppression, `MAX_TOOL_CALLS_PER_TURN = 15`, tool call audit log table in SQLite. |
+| **Web Research (Phase 1)** | **DuckDuckGo Search + Fast HTML Scraper** | Keyless `ddgs` search, `trafilatura`/`httpx` reader, URL redirect follow, conversational tool interception, and automatic answer synthesis. |
+| **File Engine (Phase 2)** | **Workspace-Gated File Creator, Patcher & Searcher** | `write_file`, `patch_file` (with multi-strategy fallback), `file_search` (glob & text search), canonical path traversal protection. |
+| **Voice & Desktop UI** | **Local `faster-whisper` + Glassmorphic Overlay** | Local Whisper STT engine, dual audio capture, persistent WebView2 storage origin for mic permissions, 6-tier governor arc ring & interactive command panel. |
+| **Remote Access Channel** | *Phase 7 (Pending)* | Telegram Bot gateway with admin ID whitelist and inline interactive approval buttons for gated actions. |
+| **Autonomous Engine** | *Phase 5 (Pending)* | Dual scheduler (preset cron routines + natural language reminders) + Windows Toast alerts. |
 
 ---
 
-## 2. Foundational Milestones (Status: Complete)
+## 2. Foundational Milestones & Hardening Tracks (Status: Complete)
 
-- [x] **Phase 0 — FastAPI Skeleton**: Async `/chat` endpoint calling Ollama with Pydantic validation.
-- [x] **Phase 1 — Basic Native Tool Loop**: Function calling with inspect-based parameter filtering (`read_file`, `list_directory`).
-- [x] **Phase 2 — Deterministic Safety Permissions**: $O(1)$ hardcoded tier lookup (`LOW_RISK`, `CONFIRMATION_REQUIRED`, `HIGH_RISK`) with SHA256 canonical action token hashes (`act_<hash>`).
-- [x] **Phase 3 — Hardware Resource Governor**: PyNVML GPU/VRAM telemetry + `psutil` CPU/RAM monitoring with automatic VRAM model eviction under load.
-- [x] **Phase 4 — Model Router & Heavy Mode**: Dynamic prompt complexity analyzer routing simple queries to local Ollama and heavy architecture/math to OpenRouter with automatic fallback.
-- [x] **Phase 5 — SQLite Short-Term Memory & Compaction**: SQLite message history with two-stage compaction (verbose tool output pruning + LLM summarization).
+- [x] **Phase 0 — FastAPI Skeleton**: Async `/chat` endpoint with Pydantic validation and health checks.
+- [x] **Phase 1 — Native Tool Loop & Validation**: Dynamic tool execution loop, inspect-based schema extraction, and OpenAI function format conversion.
+- [x] **Phase 2 — Deterministic Safety Permissions**: $O(1)$ risk-tier lookup (`LOW_RISK`, `CONFIRMATION_REQUIRED`, `HIGH_RISK`) with SHA256 canonical action token hashes (`act_<hash>`).
+- [x] **Phase 3 — Hardware Resource Governor (V2)**: PyNVML GPU/VRAM telemetry + `psutil` CPU/RAM monitoring with activity registry, 2-sided debounce, `ProcessWatcher` auto-unload via `lms unload --all`, and live desktop command panel.
+- [x] **Phase 4 — Model Router & Heavy Mode**: Dynamic prompt complexity analyzer routing normal queries to LM Studio `bonsai-27b` (with Ollama `hermes3:8b` rollback) and heavy reasoning/architecture to OpenRouter.
+- [x] **Phase 5 — SQLite Memory & Compaction**: Relational SQLite message store with 2-stage compaction (tool pruning + LLM summarization), tool audit logs, and reliability events tracking.
 - [x] **Phase 6 — MCP Bridge & Dynamic Skills Loader**: Async stdio JSON-RPC 2.0 client + dynamic keyword-matching markdown skills loader.
-- [x] **Phase 7 — Desktop UI & System Tray**: Frameless pywebview spotlight overlay (`Alt+Space`), Windows system tray with live hardware status.
-- [x] **Phase 8 — Voice & Wake-Word Engine**: "Jarvis" wake-word detection, Web Speech API dictation, and speech sanitization.
+- [x] **Phase 7 — Desktop UI & System Tray**: Frameless pywebview spotlight overlay (`Alt+Space`), Windows system tray with live hardware status, 6-tier arc ring, and governor command panel.
+- [x] **Phase 8 — Voice & Wake-Word Engine**: Local `faster-whisper` STT engine, dual audio capture, Web Speech API fallback, and speech sanitization.
+- [x] **Stage A — Safety & Execution Hardening**: Schema validator with repair-then-escalate loop, `CallHistory` duplicate breaker, rate limits, and audit log table.
+- [x] **Stage B — LM Studio Bonsai 27B Migration**: Default inference migration, OpenAI tool schema conversion, `lms` CLI integration, and tool output answer synthesis.
 
 ---
 
-## 3. OpenClaw Evolution Roadmap
+## 3. OpenClaw Autonomous Evolution Roadmap
 
 ```
-Phase 1: Web Research Engine (DuckDuckGo + Fast HTML Scraper + Dynamic Fallback)
-   ↓
-Phase 2: File Creation, Patching & Workspace Safety Gating
-   ↓
-Phase 3: Windows OS Power Controls & Desktop Toast Alerts
-   ↓
-Phase 4: Multi-Monitor Screen Vision & Visual Diagnostics
-   ↓
-Phase 5: Proactive Background Scheduler & Autonomous Watchers
-   ↓
-Phase 6: Long-Term Memory & Hybrid Local RAG (Notes/Docs Indexing)
-   ↓
-Phase 7: Remote Telegram Bot Gateway with Interactive Approval Buttons
-   ↓
-Phase 8: Enhanced Executable Skills & Workflows
+[x] Phase 1: Web Research Engine (DuckDuckGo + Fast HTML Scraper + Dynamic Fallback)
+    ↓
+[x] Phase 2: File Creation, Patching & Workspace Safety Gating
+    ↓
+[x] Phase 3: Windows OS Power Controls & Desktop Toast Alerts
+    ↓
+[ ] Phase 4: Multi-Monitor Screen Vision & Visual Diagnostics  ◄ [NEXT IN QUEUE]
+    ↓
+[ ] Phase 5: Proactive Background Scheduler & Autonomous Watchers
+    ↓
+[ ] Phase 6: Long-Term Memory & Hybrid Local RAG (Notes/Docs Indexing)
+    ↓
+[ ] Phase 7: Remote Telegram Bot Gateway with Interactive Approval Buttons
+    ↓
+[ ] Phase 8: Enhanced Executable Skills & Workflows
 ```
 
 ---
 
-## 4. Phase 1 Detailed Plan: Web Research Engine
+## 4. Phase 3 Detailed Plan: Windows OS Power Controls & Toast Alerts
 
 ### Objective
-Enable Jarvis to search the public web in real-time without external API keys, extract readable markdown from articles and documentation, and handle dynamic JavaScript-rendered sites when needed.
+Provide Jarvis with safe, native operating system power tools on Windows 11 to launch and focus applications, manage media/volume, inspect active processes, interact with the clipboard, and trigger native Windows Toast notifications.
 
 ### Components to Build
 
-#### 1. Web Search Tool (`backend/app/agent/tools/web_search.py`)
-* **Package**: `duckduckgo_search` (`ddgs`)
-* **Function**: `web_search(query: str, max_results: int = 5) -> str`
-* **Features**:
-  * Clean, formatted JSON/markdown result cards: Title, URL, and snippet.
-  * Automatic deduplication of search results.
-  * Configurable result limits (default 5, max 10) to protect context window tokens.
-  * Graceful network timeout & error formatting.
+#### 1. Windows OS Power Tools (`backend/app/agent/tools/os_tools.py`)
+* **App Launcher / Switcher**:
+  * Function: `launch_app(app_name: str) -> str`
+  * Searches Windows Start Menu / App Paths registry / common paths and brings window to focus if already running.
+* **Media & Audio Control**:
+  * Function: `media_control(action: Literal["play_pause", "next", "previous", "mute", "volume_up", "volume_down", "set_volume"], value: Optional[int] = None) -> str`
+  * Uses `pycaw` / `ctypes` keybd_event virtual key codes (`VK_MEDIA_PLAY_PAUSE`, `VK_VOLUME_MUTE`, etc.) for instant media control.
+* **Active Clipboard Manager**:
+  * Function: `get_clipboard_text() -> str` / `set_clipboard_text(text: str) -> str`
+  * Reads or sets current Windows clipboard contents with safety truncation caps.
+* **Process Inspector & Management**:
+  * Function: `list_running_processes(filter_name: Optional[str] = None, top_n: int = 10) -> str`
+  * Inspects CPU/RAM utilization of top running applications via `psutil`.
 
-```python
-def web_search(query: str, max_results: int = 5) -> str:
-    """
-    Search the web using DuckDuckGo for live information, current documentation, or news.
-    
-    Args:
-        query: The search query string.
-        max_results: Number of top results to return (default 5, max 10).
-    """
-```
+#### 2. Windows Toast Notification Engine (`backend/app/agent/tools/toast_notify.py`)
+* Function: `notify_user(title: str, message: str, urgency: Literal["low", "normal", "critical"] = "normal") -> str`
+* Dispatches native Windows 10/11 Toast notifications via Windows WinRT / PowerShell background dispatcher.
 
-#### 2. Fast HTML Scraper & Article Extractor (`backend/app/agent/tools/fetch_url.py`)
-* **Packages**: `httpx`, `trafilatura` (or `beautifulsoup4` + `html2text`)
-* **Function**: `fetch_url(url: str, max_chars: int = 8000) -> str`
-* **Features**:
-  * Strips out boilerplate, navigation bars, cookie banners, and advertisements.
-  * Converts core content into clean, readable Markdown.
-  * Enforces a strict character cap (`max_chars`, default 8,000) to keep LLM context lightweight and fast.
-  * Browser User-Agent header rotation to avoid anti-bot blocks.
-
-```python
-def fetch_url(url: str, max_chars: int = 8000) -> str:
-    """
-    Fetch the content of a web page URL and return its main article text in clean markdown.
-    
-    Args:
-        url: The web URL to fetch.
-        max_chars: Maximum characters to return (default 8000).
-    """
-```
-
-#### 3. Dynamic Browser Fallback (`backend/app/agent/tools/dynamic_fetch.py`)
-* **Package**: `playwright` (optional/on-demand)
-* **Function**: `fetch_dynamic_url(url: str, wait_selector: Optional[str] = None) -> str`
-* **Features**:
-  * Spins up headless Chromium only when simple HTTP fetching returns empty content (e.g. Single-Page React/Vue apps).
-  * Auto-closes browser instance to prevent memory leaks.
-
-#### 4. Permission Gating & Safety Integration
-* `web_search`: Classified as `LOW_RISK` (auto-executes without confirmation).
-* `fetch_url`: Classified as `LOW_RISK` for public `http://` and `https://` URLs; internal local IP ranges (`127.0.0.1`, `192.168.*`, `10.*`) trigger `CONFIRMATION_REQUIRED` to protect local network security.
-
-#### 5. Tool Registry & Orchestrator Integration
-* Register `web_search` and `fetch_url` in `backend/app/agent/tools/registry.py`.
-* Update orchestrator prompt rules to guide the model when searching vs. fetching.
+#### 3. Safety & Permission Integration
+* `get_clipboard_text`, `media_control`, `list_running_processes`, `notify_user`: Classified as `LOW_RISK` (auto-execute).
+* `set_clipboard_text`, `launch_app`: Classified as `LOW_RISK` (with target whitelist) or `CONFIRMATION_REQUIRED` for arbitrary executables.
+* Terminating processes or running arbitrary shell commands: Strictly gated under `HIGH_RISK` / `CONFIRMATION_REQUIRED`.
 
 ---
 
-## 5. Phase 1 Verification & Testing Plan
-
-### Automated Test Suite (`backend/tests/test_web_tools.py`)
-1. **`test_web_search_mocked`**: Verify search query packaging, result parsing, and token trimming.
-2. **`test_fetch_url_html_conversion`**: Verify HTML boilerplate stripping and markdown formatting.
-3. **`test_fetch_url_character_budgeting`**: Verify content truncation respect `max_chars`.
-4. **`test_permission_classification_web`**: Verify `web_search` is `LOW_RISK` and private subnet fetches require confirmation.
-
-### Manual Verification Checklist
-- [ ] Run `web_search(query="Python 3.12 new features")` in Jarvis Spotlight (`Alt+Space`) and receive a coherent, up-to-date answer.
-- [ ] Ask Jarvis to read a specific documentation page (e.g., `fetch_url("https://fastapi.tiangolo.com")`) and answer questions based on the live content.
-- [ ] Confirm that search results are cleanly trimmed and do not blow out the 16K token compaction window.
+## 5. Phase 4 Preview: Multi-Monitor Screen Vision & Diagnostics
+* Screen capture via `mss` / `PIL.ImageGrab` across primary and secondary displays.
+* Bounded image downsampling to prevent VRAM explosion on the RTX 4060 (8GB).
+* Multimodal routing: Local vision or OpenRouter vision fallback (`anthropic/claude-3.5-sonnet` / `google/gemini-2.0-flash`).
+* Desktop error dialog and IDE terminal OCR inspection.
 
 ---
 
 ## 6. Execution Guidelines
 
-* Always build one phase at a time and verify with tests before proceeding to the next.
+* Always verify each phase with mocked unit tests (`backend/tests/`) before proceeding to the next.
 * Maintain deterministic safety checks in `permissions.py` — never allow an LLM to self-authorize.
-* Keep context token footprints minimal to maintain fast response times and low VRAM overhead on the RTX 4060.
+* Keep context token footprints minimal and leverage two-stage compaction to preserve speed and low VRAM usage on the RTX 4060.

@@ -8,6 +8,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, Optional
 from urllib.parse import urlparse
+import psutil
 
 
 CONFIRMATION_TIMEOUT_ACTION: Literal["deny", "allow"] = "deny"
@@ -54,6 +55,35 @@ BASE_TOOL_RISK_MAP: dict[str, RiskTier] = {
     "fetch_url": RiskTier.LOW_RISK,
     "execute_command": RiskTier.CONFIRMATION_REQUIRED,
     "delete_file": RiskTier.HIGH_RISK,
+    # Phase 3: Windows OS Power Controls & Desktop Toast Alerts
+    "launch_app": RiskTier.CONFIRMATION_REQUIRED,
+    "focus_app": RiskTier.LOW_RISK,
+    "set_volume": RiskTier.LOW_RISK,
+    "mute_toggle": RiskTier.LOW_RISK,
+    "media_key": RiskTier.LOW_RISK,
+    "get_clipboard": RiskTier.CONFIRMATION_REQUIRED,
+    "set_clipboard": RiskTier.CONFIRMATION_REQUIRED,
+    "list_processes": RiskTier.LOW_RISK,
+    "kill_process": RiskTier.LOW_RISK,
+    "send_toast": RiskTier.LOW_RISK,
+}
+
+
+# Windows core/critical system processes that must never be terminated without explicit user confirmation.
+# Named constant defined per Phase 3 spec §3.4 — extendable and auditable.
+MAJOR_PROCESS_NAMES: set[str] = {
+    "explorer.exe",
+    "svchost.exe",
+    "winlogon.exe",
+    "csrss.exe",
+    "wininit.exe",
+    "services.exe",
+    "lsass.exe",
+    "dwm.exe",
+    "system",
+    "registry",
+    "smss.exe",
+    "spoolsv.exe",
 }
 
 
@@ -228,6 +258,67 @@ def evaluate_url_risk(url: str) -> RiskTier:
         return RiskTier.CONFIRMATION_REQUIRED
 
 
+def evaluate_kill_process_risk(pid_or_name: Any) -> tuple[RiskTier, Optional[str]]:
+    """
+    Evaluate risk tier for kill_process:
+    1. Target matching Jarvis's own backend process (PID or self-process) is flagged for self-protection.
+    2. Target process in MAJOR_PROCESS_NAMES -> CONFIRMATION_REQUIRED.
+    3. Process name matching > 1 running instances -> CONFIRMATION_REQUIRED (multi-instance safety stop).
+    4. Single non-major instance or explicit non-major PID -> LOW_RISK.
+    """
+    target_str = str(pid_or_name or "").strip()
+    if not target_str:
+        return RiskTier.LOW_RISK, "Empty process identifier."
+
+    current_pid = os.getpid()
+    parent_pid = os.getppid() if hasattr(os, "getppid") else None
+
+    # 1. Numeric PID check
+    if target_str.isdigit() or (target_str.startswith("-") and target_str[1:].isdigit()):
+        try:
+            pid_num = int(target_str)
+            if pid_num in (current_pid, parent_pid):
+                return RiskTier.CONFIRMATION_REQUIRED, "Target PID is Jarvis's own backend/launcher process (self-protection)."
+
+            try:
+                proc = psutil.Process(pid_num)
+                proc_name = proc.name().lower()
+                name_clean = proc_name[:-4] if proc_name.endswith(".exe") else proc_name
+                if proc_name in MAJOR_PROCESS_NAMES or f"{name_clean}.exe" in MAJOR_PROCESS_NAMES:
+                    return RiskTier.CONFIRMATION_REQUIRED, f"Target process '{proc_name}' (PID {pid_num}) is a Windows core/critical system process."
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+            return RiskTier.LOW_RISK, "Explicit single PID termination."
+        except Exception:
+            return RiskTier.LOW_RISK, "PID lookup failed, defaulting to LOW_RISK."
+
+    # 2. String process name check
+    raw_name = target_str.lower()
+    name_clean = raw_name[:-4] if raw_name.endswith(".exe") else raw_name
+    name_exe = f"{name_clean}.exe"
+
+    if raw_name in MAJOR_PROCESS_NAMES or name_exe in MAJOR_PROCESS_NAMES:
+        return RiskTier.CONFIRMATION_REQUIRED, f"Target process '{target_str}' is a Windows core/critical system process."
+
+    # Count matching running process instances
+    match_count = 0
+    try:
+        for p in psutil.process_iter(['pid', 'name']):
+            try:
+                p_name = (p.info.get('name') or "").lower()
+                if p_name in (raw_name, name_exe):
+                    match_count += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except Exception:
+        pass
+
+    if match_count > 1:
+        return RiskTier.CONFIRMATION_REQUIRED, f"Process name '{target_str}' matches {match_count} running instances. Multi-instance termination requires user confirmation."
+
+    return RiskTier.LOW_RISK, None
+
+
 
 @dataclass
 class PermissionDecision:
@@ -262,6 +353,7 @@ def evaluate_tool_permission(
     # 1. Base lookup (unclassified defaults to CONFIRMATION_REQUIRED)
     base_tier = BASE_TOOL_RISK_MAP.get(tool_name, RiskTier.CONFIRMATION_REQUIRED)
     effective_tier = base_tier
+    custom_reason: Optional[str] = None
 
     # 2. Argument-aware dynamic rule optimizations
     if tool_name == "execute_command":
@@ -286,6 +378,12 @@ def evaluate_tool_permission(
         url_tier = evaluate_url_risk(str(url))
         if url_tier != RiskTier.LOW_RISK:
             effective_tier = url_tier
+    elif tool_name == "kill_process":
+        target = arguments.get("pid_or_name") or arguments.get("pid") or arguments.get("name") or arguments.get("process_name") or ""
+        kp_tier, kp_reason = evaluate_kill_process_risk(target)
+        if kp_tier != RiskTier.LOW_RISK or base_tier == RiskTier.LOW_RISK:
+            effective_tier = kp_tier
+            custom_reason = kp_reason
 
     # 3. Check if user already provided explicit approval token (strictly per action_id)
     if action_id in approved_ids:
@@ -306,7 +404,7 @@ def evaluate_tool_permission(
             risk_tier=effective_tier,
             allowed=True,
             action_id=action_id,
-            reason="Tool categorized as LOW_RISK. Auto-approved."
+            reason=custom_reason or "Tool categorized as LOW_RISK. Auto-approved."
         )
     else:
         return PermissionDecision(
@@ -315,7 +413,7 @@ def evaluate_tool_permission(
             risk_tier=effective_tier,
             allowed=False,
             action_id=action_id,
-            reason=f"Action requires user confirmation (Risk Tier: {effective_tier.value})."
+            reason=custom_reason or f"Action requires user confirmation (Risk Tier: {effective_tier.value})."
         )
 
 

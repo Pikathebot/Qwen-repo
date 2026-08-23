@@ -94,7 +94,10 @@ def extract_tool_calls_from_text(content: str, user_prompt: str = "") -> tuple[s
     tool_names = {
         "write_file", "patch_file", "find_files", "grep_in_files",
         "read_file", "list_directory", "execute_command", "delete_file",
-        "web_search", "fetch_url"
+        "web_search", "fetch_url",
+        # Phase 3 OS Tools
+        "launch_app", "focus_app", "set_volume", "mute_toggle", "media_key",
+        "get_clipboard", "set_clipboard", "list_processes", "kill_process", "send_toast"
     }
     tool_announcement_regex = re.compile(
         r"(?:use(?: the)?|execute(?: the)?|call(?: the)?|invok(?:e|ing)(?: the)?)\s+`?([a-z_]+)`?(?:\s+tool|\s+function)?[\s\S]*?(```(?:json)?\s*)?(\{[\s\S]*?\})(\s*```)?",
@@ -147,6 +150,16 @@ def extract_tool_calls_from_text(content: str, user_prompt: str = "") -> tuple[s
                     extracted.append({"function": {"name": "fetch_url", "arguments": parsed}})
                 elif "command" in parsed:
                     extracted.append({"function": {"name": "execute_command", "arguments": parsed}})
+                elif "name_or_path" in parsed:
+                    extracted.append({"function": {"name": "launch_app", "arguments": parsed}})
+                elif "name_or_title_substring" in parsed:
+                    extracted.append({"function": {"name": "focus_app", "arguments": parsed}})
+                elif "level" in parsed and len(parsed) == 1:
+                    extracted.append({"function": {"name": "set_volume", "arguments": parsed}})
+                elif "pid_or_name" in parsed:
+                    extracted.append({"function": {"name": "kill_process", "arguments": parsed}})
+                elif "title" in parsed and "message" in parsed:
+                    extracted.append({"function": {"name": "send_toast", "arguments": parsed}})
         except Exception:
             pass
 
@@ -195,8 +208,13 @@ DEFAULT_SYSTEM_PROMPT = (
     "8. When inspecting or reading a local disk file, invoke 'read_file(file_path=...)'.\n"
     "9. When browsing a directory tree, invoke 'list_directory(path=...)'.\n"
     "10. When running shell commands, terminal tools, or scripts, invoke 'execute_command(command=...)'.\n"
-    "11. Strip surrounding quotation marks from user queries if present.\n"
-    "12. Always use clean relative workspace paths (e.g. '.', 'backend/app', 'scripts', 'docs')."
+    "11. When opening or launching desktop applications, invoke 'launch_app(name_or_path=...)'. ALWAYS prefer checking or calling 'focus_app(name_or_title_substring=...)' first if a window for that app may already be open, avoiding duplicate application instances.\n"
+    "12. When controlling audio volume, invoke 'set_volume(level=...)' (0-100) or 'mute_toggle()'. For media playback, invoke 'media_key(action=...)' ('play_pause', 'next', 'previous', 'stop').\n"
+    "13. When reading or writing system clipboard text, invoke 'get_clipboard()' or 'set_clipboard(text=...)'.\n"
+    "14. When listing running processes, invoke 'list_processes(filter_name=...)'. When terminating an application or process, invoke 'kill_process(pid_or_name=...)'.\n"
+    "15. When sending desktop toast notification alerts, invoke 'send_toast(title=..., message=..., urgent=...)'.\n"
+    "16. Strip surrounding quotation marks from user queries if present.\n"
+    "17. Always use clean relative workspace paths (e.g. '.', 'backend/app', 'scripts', 'docs')."
 )
 
 

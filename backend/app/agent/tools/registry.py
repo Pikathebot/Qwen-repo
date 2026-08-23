@@ -9,6 +9,11 @@ from app.agent.tools.fetch_url import fetch_url
 from app.agent.tools.write_file import write_file
 from app.agent.tools.patch_file import patch_file
 from app.agent.tools.file_search import find_files, grep_in_files
+from app.agent.tools.app_control import launch_app, focus_app
+from app.agent.tools.media_control import set_volume, mute_toggle, media_key
+from app.agent.tools.clipboard_control import get_clipboard, set_clipboard
+from app.agent.tools.process_control import list_processes, kill_process
+from app.agent.tools.notify import send_toast
 
 logger = logging.getLogger("jarvis.agent.tools")
 
@@ -21,6 +26,17 @@ TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {
     "patch_file": patch_file,
     "find_files": find_files,
     "grep_in_files": grep_in_files,
+    # Phase 3 OS Tools
+    "launch_app": launch_app,
+    "focus_app": focus_app,
+    "set_volume": set_volume,
+    "mute_toggle": mute_toggle,
+    "media_key": media_key,
+    "get_clipboard": get_clipboard,
+    "set_clipboard": set_clipboard,
+    "list_processes": list_processes,
+    "kill_process": kill_process,
+    "send_toast": send_toast,
 }
 
 AVAILABLE_TOOLS: list[Callable[..., Any]] = [
@@ -32,6 +48,17 @@ AVAILABLE_TOOLS: list[Callable[..., Any]] = [
     patch_file,
     find_files,
     grep_in_files,
+    # Phase 3 OS Tools
+    launch_app,
+    focus_app,
+    set_volume,
+    mute_toggle,
+    media_key,
+    get_clipboard,
+    set_clipboard,
+    list_processes,
+    kill_process,
+    send_toast,
 ]
 
 
@@ -90,6 +117,48 @@ class GrepInFilesArgs(BaseModel):
     case_sensitive: bool = Field(default=True, description="Case sensitivity")
 
 
+class LaunchAppArgs(BaseModel):
+    name_or_path: str = Field(..., description="Name of application alias or executable path")
+
+
+class FocusAppArgs(BaseModel):
+    name_or_title_substring: str = Field(..., description="Substring of window title or process name to focus")
+
+
+class SetVolumeArgs(BaseModel):
+    level: int = Field(..., ge=0, le=100, description="Volume level from 0 to 100")
+
+
+class MuteToggleArgs(BaseModel):
+    pass
+
+
+class MediaKeyArgs(BaseModel):
+    action: str = Field(..., description="Media playback action ('play_pause', 'next', 'previous', 'stop')")
+
+
+class GetClipboardArgs(BaseModel):
+    pass
+
+
+class SetClipboardArgs(BaseModel):
+    text: str = Field(..., description="Text content to copy to clipboard")
+
+
+class ListProcessesArgs(BaseModel):
+    filter_name: Optional[str] = Field(default=None, description="Optional process name filter substring")
+
+
+class KillProcessArgs(BaseModel):
+    pid_or_name: str = Field(..., description="Process PID or process name to terminate")
+
+
+class SendToastArgs(BaseModel):
+    title: str = Field(..., description="Toast notification header title")
+    message: str = Field(..., description="Toast notification message body")
+    urgent: bool = Field(default=False, description="Flag for urgent/high priority toast")
+
+
 TOOL_SCHEMAS: dict[str, type[BaseModel]] = {
     "read_file": ReadFileArgs,
     "list_directory": ListDirectoryArgs,
@@ -101,6 +170,17 @@ TOOL_SCHEMAS: dict[str, type[BaseModel]] = {
     "patch_file": PatchFileArgs,
     "find_files": FindFilesArgs,
     "grep_in_files": GrepInFilesArgs,
+    # Phase 3 OS Tools
+    "launch_app": LaunchAppArgs,
+    "focus_app": FocusAppArgs,
+    "set_volume": SetVolumeArgs,
+    "mute_toggle": MuteToggleArgs,
+    "media_key": MediaKeyArgs,
+    "get_clipboard": GetClipboardArgs,
+    "set_clipboard": SetClipboardArgs,
+    "list_processes": ListProcessesArgs,
+    "kill_process": KillProcessArgs,
+    "send_toast": SendToastArgs,
 }
 
 
