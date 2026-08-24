@@ -11,27 +11,35 @@ import httpx
 # Configure paths reliably across direct python execution, batch launcher, and PyInstaller exe
 if getattr(sys, "frozen", False):
     exe_dir = Path(sys.executable).resolve().parent
-    if (exe_dir / "backend").exists():
-        ROOT_DIR = exe_dir
-    elif (exe_dir.parent / "backend").exists():
-        ROOT_DIR = exe_dir.parent
-    else:
-        ROOT_DIR = exe_dir
+    curr = exe_dir
+    ROOT_DIR = exe_dir
+    for _ in range(4):
+        if (curr / "backend").exists() or (curr / ".venv").exists():
+            ROOT_DIR = curr
+            break
+        curr = curr.parent
 else:
     ROOT_DIR = Path(__file__).resolve().parent
 
 LOG_FILE = ROOT_DIR / "launcher.log"
-BACKEND_DIR = ROOT_DIR / "backend"
+BACKEND_DIR = ROOT_DIR / "backend" if (ROOT_DIR / "backend").exists() else ROOT_DIR
 
 # Locate virtualenv python
-VENV_PYTHON = ROOT_DIR / ".venv" / "Scripts" / "python.exe"
-if not VENV_PYTHON.exists():
-    if (ROOT_DIR.parent / ".venv" / "Scripts" / "python.exe").exists():
-        VENV_PYTHON = ROOT_DIR.parent / ".venv" / "Scripts" / "python.exe"
-    else:
-        import shutil
-        found = shutil.which("python.exe")
-        VENV_PYTHON = Path(found) if found else Path(sys.executable)
+VENV_PYTHON = None
+candidates = [
+    ROOT_DIR / ".venv" / "Scripts" / "python.exe",
+    ROOT_DIR.parent / ".venv" / "Scripts" / "python.exe",
+    ROOT_DIR.parent.parent / ".venv" / "Scripts" / "python.exe",
+]
+for cand in candidates:
+    if cand.exists():
+        VENV_PYTHON = cand
+        break
+
+if not VENV_PYTHON:
+    import shutil
+    found = shutil.which("python.exe")
+    VENV_PYTHON = Path(found) if found else Path(sys.executable)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,7 +65,8 @@ def start_backend() -> subprocess.Popen:
     env["PYTHONPATH"] = f"{BACKEND_DIR};{ROOT_DIR}"
     backend_log = open(ROOT_DIR / "backend.log", "a", encoding="utf-8")
     
-    logger.info("Starting Jarvis FastAPI backend server on http://127.0.0.1:8000 ... (Python: %s)", VENV_PYTHON)
+    target_cwd = BACKEND_DIR if BACKEND_DIR.is_dir() else ROOT_DIR
+    logger.info("Starting Jarvis FastAPI backend server on http://127.0.0.1:8000 ... (Python: %s, cwd: %s)", VENV_PYTHON, target_cwd)
     proc = subprocess.Popen(
         [
             str(VENV_PYTHON),
@@ -66,7 +75,7 @@ def start_backend() -> subprocess.Popen:
             "--host", "127.0.0.1",
             "--port", "8000"
         ],
-        cwd=str(BACKEND_DIR),
+        cwd=str(target_cwd),
         env=env,
         stdout=backend_log,
         stderr=backend_log,
