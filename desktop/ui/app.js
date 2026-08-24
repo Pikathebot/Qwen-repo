@@ -8,7 +8,7 @@ let currentMode = "WORKSPACE";
 let isConversationStarted = false;
 let isProcessing = false;
 let isRecording = false;
-let isVoiceReplyEnabled = true;
+let isVoiceReplyEnabled = false;
 let speechRecognition = null;
 let mediaRecorder = null;
 let audioChunks = [];
@@ -77,6 +77,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initUI();
   initVoice();
   initTelemetry();
+  syncVoiceOutputState();
   updateModelTierBadge();
   setChatMode(currentMode, false);
 });
@@ -143,16 +144,17 @@ function initUI() {
 
   // Voice Toggle Button
   if (voiceToggleBtn) {
-    voiceToggleBtn.addEventListener("click", () => {
+    voiceToggleBtn.addEventListener("click", async () => {
       isVoiceReplyEnabled = !isVoiceReplyEnabled;
-      const textEl = voiceToggleBtn.querySelector(".voice-text");
-      if (isVoiceReplyEnabled) {
-        voiceToggleBtn.classList.add("active");
-        if (textEl) textEl.textContent = "Voice: ON";
-      } else {
-        voiceToggleBtn.classList.remove("active");
-        if (textEl) textEl.textContent = "Voice: OFF";
-        if (window.speechSynthesis) window.speechSynthesis.cancel();
+      updateVoiceButtonUI();
+      try {
+        await fetch(`${API_BASE}/api/voice/output`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: isVoiceReplyEnabled })
+        });
+      } catch (err) {
+        console.debug("Error updating voice output state:", err);
       }
     });
   }
@@ -466,14 +468,45 @@ function updateModelTierBadge() {
     const nameMap = {
       "prism-ml/bonsai-27b": "Bonsai 27B",
       "bonsai-27b": "Bonsai 27B",
+      "qwen3.8-9b-distill": "Qwen 3.8 9B Distill",
       "hermes3:8b": "Hermes 3 8B",
+      "phi3.5:3.8b": "Phi 3.5 3.8B",
       "llama3.1:8b": "Llama 3.1 8B",
-      "llama3.2:3b": "Llama 3.2 3B",
-      "phi3.5:3.8b": "Phi 3.5 3.8B"
+      "llama3.2:3b": "Llama 3.2 3B"
     };
     if (activeModelName) activeModelName.textContent = nameMap[val] || val;
     activeTierBadge.className = "tier-badge tier-badge--2";
     activeTierBadge.textContent = "Tier 2 · local";
+  }
+}
+
+async function syncVoiceOutputState() {
+  try {
+    const res = await fetch(`${API_BASE}/api/voice/output`);
+    if (res.ok) {
+      const data = await res.json();
+      isVoiceReplyEnabled = Boolean(data.enabled);
+      updateVoiceButtonUI();
+    }
+  } catch (err) {
+    console.debug("Error syncing voice output state:", err);
+  }
+}
+
+function updateVoiceButtonUI() {
+  if (!voiceToggleBtn) return;
+  const textEl = voiceToggleBtn.querySelector(".voice-text");
+  if (isVoiceReplyEnabled) {
+    voiceToggleBtn.classList.add("active");
+    if (textEl) textEl.textContent = "Voice: ON";
+  } else {
+    voiceToggleBtn.classList.remove("active");
+    if (textEl) textEl.textContent = "Voice: OFF";
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio = null;
+    }
   }
 }
 
@@ -700,23 +733,22 @@ async function speakText(text) {
     window.speechSynthesis.cancel();
   }
 
-  // 1. Try Ultra-Realistic Studio Neural Speech via Jarvis Backend (en-GB-RyanNeural)
+  // 1. Try Local Voice Output via Jarvis Backend (/voice/speak)
   try {
-    const res = await fetch(`${API_BASE}/voice/tts`, {
+    const res = await fetch(`${API_BASE}/voice/speak`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: clean, voice: "en-GB-RyanNeural" })
+      body: JSON.stringify({ text: clean })
     });
 
     if (res.ok) {
-      const blob = await res.blob();
-      const audioUrl = URL.createObjectURL(blob);
-      currentAudio = new Audio(audioUrl);
-      currentAudio.play();
-      return;
+      const data = await res.json();
+      if (data.status === "spoken") {
+        return;
+      }
     }
   } catch (err) {
-    console.debug("Neural TTS fallback to browser TTS:", err);
+    console.debug("Local voice speak fallback to browser TTS:", err);
   }
 
   // 2. Fallback to Browser SpeechSynthesis
