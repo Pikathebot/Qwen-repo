@@ -66,6 +66,8 @@ BASE_TOOL_RISK_MAP: dict[str, RiskTier] = {
     "list_processes": RiskTier.LOW_RISK,
     "kill_process": RiskTier.LOW_RISK,
     "send_toast": RiskTier.LOW_RISK,
+    "play_audio": RiskTier.LOW_RISK,
+    "stop_playback": RiskTier.LOW_RISK,
 }
 
 

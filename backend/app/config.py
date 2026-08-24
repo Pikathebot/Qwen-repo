@@ -56,6 +56,14 @@ class Settings(BaseSettings):
     reliability_window_size: int = 30
     reliability_floor: float = 0.75  # 75% floor over rolling window of last 30 tool calls
 
+    # TTS & Voice Output Settings
+    voice_output_enabled: bool = False
+    tts_engine: str = "chatterbox"  # "chatterbox" | "kokoro"
+    tts_vram_required_mb: float = 2500.0
+    tts_kokoro_vram_required_mb: float = 1200.0
+    tts_chunk_size_chars: int = 300
+    tts_device: str = "cuda"
+
     model_config = SettingsConfigDict(
         env_file=os.path.join(BASE_DIR, ".env"),
         env_file_encoding="utf-8",

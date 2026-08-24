@@ -36,6 +36,7 @@ class ActivityType(str, Enum):
     SCREEN_VISION = "screen_vision"
     SCHEDULER_JOB = "scheduler_job"
     TELEGRAM_ACTION = "telegram_action"
+    TTS_INFERENCE = "tts_inference"
 
 
 class GovernorStatus(str, Enum):
@@ -919,6 +920,44 @@ class ResourceGovernor:
                 return True, None
 
         return False, reason
+
+    def can_allocate_vram(self, required_mb: float, live_poll: bool = True) -> tuple[bool, str]:
+        """
+        Evaluates whether required_mb of additional GPU VRAM can be safely allocated
+        without breaching the configured VRAM threshold or running out of physical headroom.
+        Returns (can_allocate: bool, reason: str).
+        """
+        if not self.enabled:
+            return True, "Governor disabled"
+        if self._manual_paused:
+            return False, f"Manual pause active: {self._manual_pause_reason or 'paused'}"
+        if self._external_apps_active:
+            apps = ", ".join(sorted(self._external_apps_active.keys()))
+            return False, f"External heavy app active ({apps})"
+        if self._debounced_throttled:
+            reasons = "; ".join(self._debounced_reasons) if self._debounced_reasons else "Host throttled"
+            return False, f"Governor throttled: {reasons}"
+
+        metrics = self.collect_metrics() if live_poll else self._current_metrics
+        if not metrics.gpu_available:
+            return False, "GPU/NVML telemetry not available"
+
+        if metrics.vram_free_mb < required_mb:
+            return False, (
+                f"Insufficient physical VRAM: {metrics.vram_free_mb:.1f} MB free, "
+                f"{required_mb:.1f} MB required"
+            )
+
+        if metrics.vram_total_mb > 0:
+            projected_used = metrics.vram_used_mb + required_mb
+            projected_pct = (projected_used / metrics.vram_total_mb) * 100.0
+            if projected_pct > self.vram_threshold:
+                return False, (
+                    f"Projected VRAM utilization ({projected_pct:.1f}%) exceeds threshold "
+                    f"({self.vram_threshold:.1f}%)"
+                )
+
+        return True, f"VRAM headroom verified ({metrics.vram_free_mb:.1f} MB free)"
 
 
 class _ActivityContext:

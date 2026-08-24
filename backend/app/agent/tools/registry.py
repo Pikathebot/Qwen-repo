@@ -14,6 +14,7 @@ from app.agent.tools.media_control import set_volume, mute_toggle, media_key
 from app.agent.tools.clipboard_control import get_clipboard, set_clipboard
 from app.agent.tools.process_control import list_processes, kill_process
 from app.agent.tools.notify import send_toast
+from app.agent.tools.audio_playback import play_audio, stop_playback
 
 logger = logging.getLogger("jarvis.agent.tools")
 
@@ -37,6 +38,8 @@ TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {
     "list_processes": list_processes,
     "kill_process": kill_process,
     "send_toast": send_toast,
+    "play_audio": play_audio,
+    "stop_playback": stop_playback,
 }
 
 AVAILABLE_TOOLS: list[Callable[..., Any]] = [
@@ -59,6 +62,8 @@ AVAILABLE_TOOLS: list[Callable[..., Any]] = [
     list_processes,
     kill_process,
     send_toast,
+    play_audio,
+    stop_playback,
 ]
 
 
@@ -159,6 +164,14 @@ class SendToastArgs(BaseModel):
     urgent: bool = Field(default=False, description="Flag for urgent/high priority toast")
 
 
+class PlayAudioArgs(BaseModel):
+    audio_bytes: bytes = Field(..., description="Raw audio bytes to play")
+
+
+class StopPlaybackArgs(BaseModel):
+    pass
+
+
 TOOL_SCHEMAS: dict[str, type[BaseModel]] = {
     "read_file": ReadFileArgs,
     "list_directory": ListDirectoryArgs,
@@ -181,6 +194,8 @@ TOOL_SCHEMAS: dict[str, type[BaseModel]] = {
     "list_processes": ListProcessesArgs,
     "kill_process": KillProcessArgs,
     "send_toast": SendToastArgs,
+    "play_audio": PlayAudioArgs,
+    "stop_playback": StopPlaybackArgs,
 }
 
 

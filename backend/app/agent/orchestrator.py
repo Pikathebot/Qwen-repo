@@ -29,6 +29,8 @@ from app.memory.store import MemoryStore
 from app.memory.compactor import ContextCompactor
 from app.skills.loader import SkillsLoader, Skill
 from app.mcp.manager import MCPManager
+from app.agent.tts.chatterbox_engine import ChatterboxEngine
+from app.agent.tools.audio_playback import play_audio, stop_playback
 
 logger = logging.getLogger("jarvis.agent.orchestrator")
 
@@ -240,7 +242,9 @@ class AgentOrchestrator:
         compactor: Optional[ContextCompactor] = None,
         skills_loader: Optional[SkillsLoader] = None,
         mcp_manager: Optional[MCPManager] = None,
-        reliability_monitor: Optional[ReliabilityMonitor] = None
+        reliability_monitor: Optional[ReliabilityMonitor] = None,
+        tts_engine: Optional[ChatterboxEngine] = None,
+        voice_output_enabled: Optional[bool] = None,
     ):
         self.ollama_client = ollama_client or ollama.AsyncClient(host=settings.ollama_host)
         self.lmstudio_client = lmstudio_client or LMStudioClient(
@@ -275,8 +279,87 @@ class AgentOrchestrator:
         self.skills_loader = skills_loader or SkillsLoader()
         self.mcp_manager = mcp_manager or MCPManager()
         self.reliability_monitor = reliability_monitor or ReliabilityMonitor(memory_store=self.memory_store)
+        self.tts_engine = tts_engine or ChatterboxEngine()
+        self.voice_output_enabled = (
+            voice_output_enabled if voice_output_enabled is not None else settings.voice_output_enabled
+        )
+
+    def _finalize_result(self, result: OrchestratorResult) -> OrchestratorResult:
+        """
+        Finalizes an orchestrator result. If voice output is enabled and the turn is completed,
+        extracts pure natural-language prose and triggers non-blocking audio synthesis and playback.
+        """
+        if self.voice_output_enabled and result.status == "completed" and result.response:
+            try:
+                clean_text, _ = extract_tool_calls_from_text(result.response)
+                clean_text = self.tts_engine.sanitize_text(clean_text or result.response)
+                if clean_text:
+                    audio_bytes = self.tts_engine.synthesize(clean_text)
+                    if audio_bytes:
+                        play_audio(audio_bytes)
+            except Exception as e:
+                logger.warning("Error synthesizing or playing orchestrator voice output: %s", e)
+        return result
 
     async def run(
+        self,
+        user_message: str,
+        session_id: Optional[str] = None,
+        requested_mode: Optional[str] = None,
+        requested_model: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        approved_action_ids: Optional[list[str]] = None,
+        max_iterations: int = 5,
+        compaction_threshold_override: Optional[int] = None,
+        chat_mode: Optional[str] = "WORKSPACE"
+    ) -> OrchestratorResult:
+        # 0. Mid-speech interruption: stop any active audio playback immediately on new turn
+        stop_playback()
+
+        active_session_id = session_id or "default"
+
+        # Conversational voice toggle commands
+        lower_msg = user_message.strip().lower()
+        if lower_msg in ("stop talking", "be quiet", "silence", "stop speech", "stop audio"):
+            stop_playback()
+            return OrchestratorResult(
+                response="I have stopped speaking.",
+                model="system",
+                provider="system",
+                session_id=active_session_id
+            )
+        if lower_msg in ("voice on", "enable voice", "turn voice on", "unmute voice"):
+            self.voice_output_enabled = True
+            return self._finalize_result(OrchestratorResult(
+                response="Voice output is now enabled.",
+                model="system",
+                provider="system",
+                session_id=active_session_id
+            ))
+        if lower_msg in ("voice off", "disable voice", "turn voice off", "mute voice"):
+            self.voice_output_enabled = False
+            stop_playback()
+            return OrchestratorResult(
+                response="Voice output is now disabled.",
+                model="system",
+                provider="system",
+                session_id=active_session_id
+            )
+
+        res = await self._run_internal(
+            user_message=user_message,
+            session_id=session_id,
+            requested_mode=requested_mode,
+            requested_model=requested_model,
+            system_prompt=system_prompt,
+            approved_action_ids=approved_action_ids,
+            max_iterations=max_iterations,
+            compaction_threshold_override=compaction_threshold_override,
+            chat_mode=chat_mode
+        )
+        return self._finalize_result(res)
+
+    async def _run_internal(
         self,
         user_message: str,
         session_id: Optional[str] = None,

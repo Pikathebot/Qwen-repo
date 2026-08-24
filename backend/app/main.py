@@ -26,6 +26,8 @@ from app.mcp.manager import MCPManager
 from app.voice.wake_word import WakeWordDetector
 from app.voice.transcriber import AudioTranscriber
 from app.voice.synthesizer import VoiceSynthesizer
+from app.agent.tts.chatterbox_engine import ChatterboxEngine
+from app.agent.tools.audio_playback import is_playing as is_audio_playing, stop_playback as stop_audio_playback
 
 # Configure logging
 logging.basicConfig(
@@ -95,6 +97,7 @@ mcp_manager = MCPManager()
 wake_detector = WakeWordDetector()
 transcriber = AudioTranscriber()
 synthesizer = VoiceSynthesizer()
+chatterbox_engine = ChatterboxEngine(governor=governor)
 
 
 @asynccontextmanager
@@ -117,6 +120,8 @@ async def lifespan(app: FastAPI):
     yield
     
     logger.info("Shutting down Jarvis Assistant backend services...")
+    stop_audio_playback()
+    chatterbox_engine.unload_model()
     wake_detector.stop_listening()
     if settings.governor_enabled:
         await process_watcher.stop()
@@ -502,13 +507,57 @@ async def switch_model_backend(req: SwitchBackendRequest):
 
 # --- Voice Endpoints ---
 
+class VoiceOutputStatus(BaseModel):
+    enabled: bool
+    engine: str
+    vram_required_mb: float
+    is_loaded: bool
+    is_playing: bool
+
+
+class VoiceOutputToggleRequest(BaseModel):
+    enabled: bool
+
+
+@app.get("/api/voice/output", response_model=VoiceOutputStatus)
+@app.get("/voice/output", response_model=VoiceOutputStatus)
+async def get_voice_output_status():
+    """Returns runtime status of spoken voice output and audio engine."""
+    return VoiceOutputStatus(
+        enabled=settings.voice_output_enabled,
+        engine=settings.tts_engine,
+        vram_required_mb=settings.tts_vram_required_mb,
+        is_loaded=chatterbox_engine.is_loaded(),
+        is_playing=is_audio_playing()
+    )
+
+
+@app.post("/api/voice/output", response_model=VoiceOutputStatus)
+@app.post("/voice/output", response_model=VoiceOutputStatus)
+async def toggle_voice_output(req: VoiceOutputToggleRequest):
+    """Enables or disables runtime voice output and stops playback if disabled."""
+    settings.voice_output_enabled = req.enabled
+    if not req.enabled:
+        stop_audio_playback()
+    return VoiceOutputStatus(
+        enabled=settings.voice_output_enabled,
+        engine=settings.tts_engine,
+        vram_required_mb=settings.tts_vram_required_mb,
+        is_loaded=chatterbox_engine.is_loaded(),
+        is_playing=is_audio_playing()
+    )
+
+
 @app.get("/voice/status")
 async def voice_status():
     """Returns voice and wake-word detector status."""
     return {
         "wake_word_active": wake_detector.is_listening,
         "wake_words": wake_detector.wake_words,
-        "synthesizer_voice": synthesizer.voice_name
+        "synthesizer_voice": synthesizer.voice_name,
+        "voice_output_enabled": settings.voice_output_enabled,
+        "tts_engine_loaded": chatterbox_engine.is_loaded(),
+        "is_playing_audio": is_audio_playing()
     }
 
 
@@ -680,7 +729,8 @@ async def chat(request: ChatRequest):
         compactor=compactor,
         skills_loader=skills_loader,
         mcp_manager=mcp_manager,
-        reliability_monitor=reliability_monitor
+        reliability_monitor=reliability_monitor,
+        tts_engine=chatterbox_engine
     )
 
     try:
