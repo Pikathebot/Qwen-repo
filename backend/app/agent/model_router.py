@@ -58,6 +58,7 @@ class ModelRouter:
         self.default_mode = default_mode
         self._active_backend = active_backend.lower().strip() if active_backend else None
         self.lmstudio_model = lmstudio_model or getattr(settings, "lmstudio_model", "prism-ml/bonsai-27b")
+        self.lmstudio_qwen_model = getattr(settings, "lmstudio_qwen_model", "qwen3.8-9b-distill")
         self.ollama_model = ollama_model or settings.ollama_model
         self.openrouter_heavy_model = openrouter_heavy_model or settings.openrouter_heavy_model
 
@@ -77,10 +78,13 @@ class ModelRouter:
         Returns (provider, model, backend_name).
         """
         if requested_model:
-            if requested_model == self.ollama_model or ":" in requested_model:
-                return "ollama", requested_model, f"Ollama ({requested_model})"
+            req_lower = requested_model.lower().strip()
+            if req_lower in ("qwen3.8:9b", "qwen3.8-9b", "qwen3.8-9b-distill", "qwen3.8", self.lmstudio_qwen_model.lower()):
+                return "lmstudio", self.lmstudio_qwen_model, f"LM Studio ({self.lmstudio_qwen_model})"
             elif requested_model == self.lmstudio_model:
                 return "lmstudio", requested_model, f"LM Studio ({requested_model})"
+            elif requested_model == self.ollama_model or ":" in requested_model:
+                return "ollama", requested_model, f"Ollama ({requested_model})"
             else:
                 provider = "lmstudio" if self.active_backend == "bonsai" else "ollama"
                 return provider, requested_model, f"{provider} ({requested_model})"

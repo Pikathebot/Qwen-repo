@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     # LM Studio Local Configuration
     lmstudio_base_url: str = "http://localhost:1234/v1"
     lmstudio_model: str = "prism-ml/bonsai-27b"
+    lmstudio_qwen_model: str = "qwen3.8-9b-distill"
 
     # Local Ollama Configuration (Rollback Target)
     ollama_host: str = "http://localhost:11434"
