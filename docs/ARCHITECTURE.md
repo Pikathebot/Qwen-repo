@@ -1,6 +1,6 @@
 # Jarvis Assistant — System Architecture
 
-This document provides a comprehensive technical overview of the Jarvis Local AI Assistant architecture across all 8 subsystem layers.
+This document provides a comprehensive technical overview of the Jarvis Local AI Assistant architecture across all backend and frontend subsystem layers.
 
 ---
 
@@ -8,11 +8,12 @@ This document provides a comprehensive technical overview of the Jarvis Local AI
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           DESKTOP CLIENT & TRAY                             │
-│   • Spotlight Overlay (pywebview)        • Windows System Tray (pystray)    │
-│   • Global Hotkeys (Alt+Space / Ctrl+Space) • Voice / Wake-Word ("Jarvis")  │
+│                           DESKTOP CLIENT                                    │
+│   • Canonical Next.js / React Desktop UI (desktop-app/)                     │
+│   • Project Workspace Switcher | 4-Tab RightPanel | Attachment Composer     │
+│   • Fallback PyWebView Desktop UI (desktop/ui) via --legacy-ui              │
 └──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │ HTTP JSON-RPC
+                                       │ SSE Streaming (POST /chat/stream)
 ┌──────────────────────────────────────▼──────────────────────────────────────┐
 │                            FASTAPI BACKEND SERVICE                          │
 │                                                                             │
@@ -24,15 +25,15 @@ This document provides a comprehensive technical overview of the Jarvis Local AI
 │  ┌────────────▼───────────────────────────▼──────────────────────▼───────┐  │
 │  │                           Agent Orchestrator                          │  │
 │  │   • Multi-Turn Tool Loop                 • Context Compaction         │  │
-│  │   • Dynamic Skills Loader                • MCP Stdio Client Bridge    │  │
+│  │   • Attachment Context Injection         • MCP Stdio Client Bridge    │  │
+│  │   • Dynamic Skills Loader                • Native llama.cpp Provider  │  │
 │  └────────────┬──────────────────────────────────────────────────┬───────┘  │
 │               │                                                  │          │
 │  ┌────────────▼────────────┐                       ┌─────────────▼───────┐  │
-│  │      SQLite Memory      │                       │     Tool Registry   │  │
-│  │  (Sessions & Messages)  │                       │   • read_file       │  │
-│  └─────────────────────────┘                       │   • list_directory  │  │
-│                                                    │   • MCP Tools       │  │
-│                                                    └─────────────────────┘  │
+│  │    SQLModel Database    │                       │  llama-server.exe   │  │
+│  │ (Projects, Sessions,    │                       │  (Qwen3.5-9B / 4B)  │  │
+│  │  Attachments, Artifacts)│                       │  -ngl 99 --no-mmap  │  │
+│  └─────────────────────────┘                       └─────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -40,46 +41,56 @@ This document provides a comprehensive technical overview of the Jarvis Local AI
 
 ## Core Subsystems
 
-### 1. Agent Orchestrator & Native Tool Loop (`backend/app/agent/`)
-- **`orchestrator.py`**: Manages the iterative tool calling loop with Ollama and OpenRouter.
-- **`tool_registry.py`**: Native tool registration with docstring parsing and schema extraction.
-- **Introspection & Validation**: Uses Python's `inspect.signature` to validate LLM tool call arguments against function definitions, preventing hallucinations and signature mismatches.
+### 1. Primary Inference Runtime & llama.cpp (`backend/app/agent/runtime_process_manager.py`)
+- **Native `llama-server.exe` Execution**: Manages child process lifecycle on `http://127.0.0.1:8001`.
+- **Hardware-Tailored Flags**: Launches with `-ngl 99` for 100% GPU VRAM offload and `--no-mmap` to conserve 16GB system RAM on the RTX 4060.
+- **Process-Based VRAM Eviction**: Calling `RuntimeProcessManager.stop()` terminates the server process cleanly, freeing 100% GPU memory on demand.
+- **Supported Models**:
+  - **Main Model**: `Qwen3.5-9B-Q4_K_M.gguf`
+  - **Fast Model**: `Qwen3.5-4B-Q4_K_M.gguf`
 
-### 2. Safety Permission Layer (`backend/app/agent/permissions.py`)
+### 2. Agent Orchestrator & Native Tool Loop (`backend/app/agent/orchestrator.py`)
+- **Multi-Turn Execution**: Evaluates user prompts, tool calls, and completions asynchronously.
+- **Attachment Context Injection**: Automatically extracts text/code from session attachments and injects formatted snippets into the turn prompt context.
+- **Tool Validation**: Uses `inspect.signature` to validate LLM tool call arguments against function schemas, preventing hallucinations.
+
+### 3. Safety Permission Layer (`backend/app/agent/permissions.py`)
 - **Deterministic Hardcoded Evaluation**: Zero-overhead $O(1)$ rule table mapping operations to risk tiers:
-  - `LOW_RISK`: Automatically executed without user confirmation (`read_file`, `list_directory`).
-  - `CONFIRMATION_REQUIRED`: Blocks execution and returns approval tokens (`write_file`, `execute_command`).
+  - `LOW_RISK`: Automatically executed without user confirmation (`read_file`, `web_search`, `fetch_url`).
+  - `CONFIRMATION_REQUIRED`: Blocks execution and returns approval tokens (`write_file`, `patch_file`, `app_control`).
   - `HIGH_RISK`: Always requires confirmation (`delete_file`, destructive shell commands like `rm -rf`, `Format-Volume`).
 - **Canonical Action Token Hashing**: Generates unique SHA-256 tokens (`act_<hash>`) for each blocked action, preventing replay attacks or hallucinated approvals.
 
-### 3. Hardware Resource Governor (`backend/app/governor/`)
+### 4. Hardware Resource Governor (`backend/app/governor/`)
 - **Real-Time Telemetry**: Uses `nvidia-ml-py` (PyNVML) to poll NVIDIA RTX 4060 GPU utilization, VRAM usage (MB and percentage), and temperature (°C), along with `psutil` for host CPU/RAM.
 - **Adaptive Queueing & Overload Protection**: If hardware thresholds are exceeded, requests enter an adaptive waiting queue (`wait_until_healthy`). If the system remains overloaded beyond the timeout, HTTP 429 is returned to protect local hardware stability.
 
-### 4. Model Router & Heavy Mode (`backend/app/agent/model_router.py`)
-- **Dynamic Complexity Analysis**: Evaluates query depth, multi-step code synthesis, formal mathematical proofs, and architectural design prompts.
-- **Dual-Tier Routing**:
-  - **Normal Mode**: Runs locally on Ollama (`qwen3.5:9b` or `qwen2.5:0.5b`) ensuring complete offline privacy.
-  - **Heavy Mode**: Routes complex tasks to high-capacity cloud models (e.g. `deepseek/deepseek-chat` or `anthropic/claude-3.5-sonnet`) via OpenRouter, with automatic fallback to local Ollama on failure.
+### 5. Unified Relational Database (`backend/app/database/`, `backend/app/memory/`)
+- **SQLModel ORM & Alembic Migrations**: Single unified SQLite store (`data/jarvis_memory.db`) with automated startup schema migrations.
+- **Entities**:
+  - `Project`: Workspaces with custom instructions and local folder paths.
+  - `Session` & `Message`: Multi-turn chat history with session filtering.
+  - `Attachment`: User-uploaded files tracked with metadata and disk paths.
+  - `Artifact` & `ArtifactVersion`: AI-generated durable outputs with version tracking.
+  - `ToolCall` & `ToolResult`: Structured tool invocation history.
+- **Context Compactor (`compactor.py`)**: Two-stage progressive compaction (tool output truncation + LLM turn summarization).
 
-### 5. Short-Term Memory & Context Compaction (`backend/app/memory/`)
-- **SQLite Storage**: Relational message store in `data/jarvis_memory.db` tracking conversation turns, role metadata, and timestamps.
-- **Two-Stage Progressive Compaction**:
-  - **Stage 1 (Tool Pruning)**: Truncates verbose tool output dumps (>200 characters) in older turns to concise summaries.
-  - **Stage 2 (LLM Summarization)**: Compresses older 50% turns into compact bullet points while preserving recent turns verbatim.
-  - Transparent audit logging in `compaction_events` table.
+### 6. Project Workspaces & Section 7 Filesystem (`backend/app/routers/projects.py`)
+- **Storage Layout**: Enforces directory isolation under `${WORKSPACE_PATH}/projects/{project_id}/`:
+  - `files/`: User-uploaded attachments.
+  - `knowledge/`: Project knowledge documents.
+  - `artifacts/`: AI-generated code, markdown, and reports.
+  - `memory/`: Project-specific notes and preferences.
+  - `indexes/`: Vector and search indices.
 
-### 6. Model Context Protocol (MCP) & Skills (`backend/app/mcp/`, `backend/app/skills/`)
-- **MCP Stdio Client**: Async JSON-RPC 2.0 protocol client communicating with external subprocess tools.
-- **Built-in Diagnostics Server**: Provides `get_disk_usage` and `get_system_uptime`.
-- **Dynamic Skills Loader**: Parses YAML frontmatter and markdown instructions from `skills/*.md`. Dynamically matches triggers in user messages and injects specialized instructions without bloating base context.
-
-### 7. Desktop Client & System Tray (`desktop/`)
-- **Floating Spotlight Overlay**: Frameless glassmorphic search bar built with HTML5, CSS3, and `pywebview`.
-- **Global Hotkey Daemon**: System-wide `Alt+Space` and `Ctrl+Space` triggers via `pynput`.
-- **Windows System Tray**: Background service powered by `pystray` with live telemetry overview.
+### 7. Canonical Desktop Frontend (`desktop-app/`)
+- **Technology**: React 14 + Next.js + Tailwind CSS + TypeScript.
+- **Key Features**:
+  - **Sidebar**: Workspace/Project switcher dropdown, session list, and new chat trigger.
+  - **RightPanel**: 4-tab panel (`Artifacts`, `Files`, `Context`, `Activity`).
+  - **Composer**: Attachment upload button with preview chips and action confirmation buttons.
+  - **Streaming**: Server-Sent Events client (`sse-client.ts`) parsing live token streams from `/chat/stream`.
 
 ### 8. Voice & Wake-Word Engine (`backend/app/voice/`)
 - **Wake-Word Detector**: Regex keyword spotter listening for `"Jarvis"`, `"Hey Jarvis"`, and variants.
-- **Speech Sanitizer & Synthesizer**: Cleans markdown formatting, code blocks, and URLs for natural vocalization.
-- **Web Speech API**: Zero-latency voice recognition and streaming dictation in the desktop UI.
+- **Chatterbox TTS**: Text-to-speech audio synthesis with real-time playback control and speech sanitization.

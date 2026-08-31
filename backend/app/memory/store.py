@@ -185,7 +185,7 @@ class MemoryStore:
                 session.rollback()
                 raise
 
-    def get_messages(self, session_id: str) -> list[dict[str, Any]]:
+    def get_messages(self, session_id: str, limit: Optional[int] = None) -> list[dict[str, Any]]:
         with self._get_session() as session:
             try:
                 statement = (
@@ -193,7 +193,10 @@ class MemoryStore:
                     .where(Message.session_id == session_id)
                     .order_by(col(Message.id).asc())
                 )
+                if limit is not None and limit > 0:
+                    statement = statement.limit(limit)
                 rows = session.exec(statement).all()
+
 
                 messages = []
                 for row in rows:

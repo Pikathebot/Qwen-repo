@@ -164,9 +164,24 @@ function dispatchEvent(
     case "tool_end":
       callbacks.onToolEnd?.(data as SSEEventMap["tool_end"]);
       break;
+    case "tool_call":
+      callbacks.onToolCall?.(data as SSEEventMap["tool_call"]);
+      break;
+    case "tool_result":
+      callbacks.onToolResult?.(data as SSEEventMap["tool_result"]);
+      break;
+    case "agent_status":
+      callbacks.onAgentStatus?.(data as SSEEventMap["agent_status"]);
+      break;
     case "confirmation_required":
       callbacks.onConfirmationRequired?.(
         data as SSEEventMap["confirmation_required"]
+      );
+      break;
+
+    case "retrieval_context":
+      callbacks.onRetrievalContext?.(
+        data as SSEEventMap["retrieval_context"]
       );
       break;
     case "done":
@@ -178,4 +193,5 @@ function dispatchEvent(
     default:
       break;
   }
+
 }

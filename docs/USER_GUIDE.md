@@ -1,50 +1,54 @@
 # Jarvis Assistant — User Guide
 
-Welcome to Jarvis, your private, lightweight local AI assistant for Windows.
+Welcome to Jarvis, your private, lightweight local AI assistant for Windows 11.
 
 ---
 
 ## 1. Quick Start
 
 ### Launching Jarvis
-- **From Taskbar**: Click the **Jarvis Assistant** icon on your Windows taskbar.
-- **From Desktop**: Double-click **Jarvis Assistant** on your Desktop.
-- **From Terminal**:
-  ```powershell
-  d:/JARVIS/.venv/Scripts/python d:/JARVIS/run_jarvis.py
-  ```
+- **From Windows Launcher**: Run `.\Jarvis.bat` or `python run_jarvis.py`.
+- **Legacy Fallback**: Run `python run_jarvis.py --legacy-ui` to open the legacy vanilla UI.
 
 ---
 
-## 2. Keyboard Navigation & Controls
+## 2. Desktop Interface Overview
 
-Jarvis is designed for frictionless keyboard interaction:
+The canonical Jarvis desktop application ([`desktop-app/`](../desktop-app/)) consists of 3 integrated areas:
 
-| Shortcut | Action |
-| :--- | :--- |
-| **`Alt + Space`** | Summon or dismiss the floating Spotlight window from anywhere in Windows |
-| **`Ctrl + Space`** | Alternative global summon hotkey |
-| **`Enter`** | Submit current prompt |
-| **`Escape`** | Hide the floating window |
-| **`Tab`** | Cycle routing mode (**Auto** $\rightarrow$ **Normal** $\rightarrow$ **Heavy**) |
+### 1. Left Sidebar
+- **Workspace Switcher**: Select between your isolated Project Workspaces or switch to Global chat.
+- **New Project Modal**: Create a new project with custom system instructions and designated local folders.
+- **Session History**: Easily switch between previous conversation sessions or launch a new chat.
+
+### 2. Main Conversation Viewport & Composer
+- **Live SSE Streaming**: Fluid, real-time message streaming with tool execution logs.
+- **Paperclip Attachment Button**: Upload source code, markdown, PDFs, or data files. Files are automatically processed and injected into the LLM context.
+- **Deterministic Action Cards**: Approve or deny sensitive operations (`write_file`, `execute_command`) with one click.
+
+### 3. Right Panel (4 Tabs)
+- **Artifacts**: View and browse AI-generated durable code snippets, markdown reports, and version history.
+- **Files**: Inspect all files stored in the active project workspace.
+- **Context**: View active system instructions and context usage.
+- **Activity**: Inspect hardware telemetry and background tool execution logs.
 
 ---
 
 ## 3. Voice Interaction & Wake-Word
 
-Jarvis supports hands-free voice interaction:
-
+Jarvis includes hands-free voice interaction:
 1. **Say the Wake-Word**: Say **"Jarvis, ..."** or **"Hey Jarvis, ..."** followed by your query.
-2. **Click-to-Speak**: Click the **Microphone icon** in the search bar. The icon will pulse red while listening.
-3. **Auto-Submit**: When you finish speaking, your transcribed query is automatically submitted.
+2. **Conversational Speech Controls**:
+   - Say `"Voice off"` or `"Be quiet"` to mute vocal responses.
+   - Say `"Voice on"` to re-enable audio output.
 
 ---
 
 ## 4. Safety Permissions & Action Confirmations
 
-When an operation touches the filesystem or executes system commands, Jarvis evaluates safety tiers:
-- **Low-Risk Tools** (`read_file`, `list_directory`): Executed immediately.
-- **Confirmation-Required Tools** (`write_file`, `execute_command`, `delete_file`): Jarvis presents an **Action Confirmation Card**:
+When an operation touches the filesystem or executes system commands, Jarvis evaluates deterministic risk tiers:
+- **Low-Risk Tools** (`read_file`, `web_search`, `fetch_url`): Executed immediately.
+- **Confirmation-Required Tools** (`write_file`, `patch_file`, `app_control`): Jarvis presents an **Action Confirmation Card**:
   - Click **`Approve & Execute`** to authorize the action with a unique cryptographic action token.
   - Click **`Cancel`** to reject.
 
@@ -53,7 +57,6 @@ When an operation touches the filesystem or executes system commands, Jarvis eva
 ## 5. Adding Custom Skills
 
 You can extend Jarvis with custom skills without writing Python code:
-
 1. Create a `.md` file in the `skills/` directory (e.g. `skills/git_helper.md`):
    ```markdown
    ---
@@ -71,17 +74,4 @@ You can extend Jarvis with custom skills without writing Python code:
    - Always run git status before staging changes.
    - Format commit messages cleanly following Conventional Commits.
    ```
-2. Reload skills dynamically in the UI or call `POST http://127.0.0.1:8000/skills/reload`.
-
----
-
-## 6. Configuring Heavy Mode (OpenRouter)
-
-To enable Heavy Mode cloud reasoning:
-1. Open [`backend/.env`](file:///d:/JARVIS/backend/.env).
-2. Set your OpenRouter API key:
-   ```env
-   OPENROUTER_API_KEY="sk-or-v1-..."
-   OPENROUTER_DEFAULT_MODEL="deepseek/deepseek-chat"
-   ```
-3. In the UI, press `Tab` or click the mode badge to toggle **Heavy** mode.
+2. Reload skills dynamically by calling `POST http://127.0.0.1:8000/skills/reload`.

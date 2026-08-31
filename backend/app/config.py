@@ -98,8 +98,30 @@ class Settings(BaseSettings):
 
     # Runtime & Legacy Compatibility
     model_runtime: str = Field(default="llama_cpp", alias="MODEL_RUNTIME")
+
+    # Context Engine & RAG Settings (CPU-Only)
+    rag_embedding_model: str = Field(default="Qwen/Qwen3-Embedding-0.6B", alias="RAG_EMBEDDING_MODEL")
+    rag_reranker_model: str = Field(default="Qwen/Qwen3-Reranker-0.6B", alias="RAG_RERANKER_MODEL")
+    rag_device: str = Field(default="cpu", alias="RAG_DEVICE")
+    rag_chunk_size: int = Field(default=1024, alias="RAG_CHUNK_SIZE")
+    rag_chunk_overlap: int = Field(default=128, alias="RAG_CHUNK_OVERLAP")
+    rag_top_k: int = Field(default=5, alias="RAG_TOP_K")
+
+    # Context Manager Budgeting & KV Cache Safeguards
+    context_reserved_output_tokens: int = Field(default=2048, alias="CONTEXT_RESERVED_OUTPUT_TOKENS")
+    context_tier2_max_attachment_tokens: int = Field(default=8000, alias="CONTEXT_TIER2_MAX_ATTACHMENT_TOKENS")
+    context_tier3_max_chunks: int = Field(default=5, alias="CONTEXT_TIER3_MAX_CHUNKS")
+    context_tier4_max_messages: int = Field(default=20, alias="CONTEXT_TIER4_MAX_MESSAGES")
+    context_include_summary: bool = Field(default=True, alias="CONTEXT_INCLUDE_SUMMARY")
+
+    # Terminal Sandbox Settings (Phase 4)
+    terminal_timeout_seconds: int = Field(default=30, alias="TERMINAL_TIMEOUT_SECONDS")
+
     active_model_backend: str = Field(default="bonsai", alias="ACTIVE_MODEL_BACKEND")
+
     lmstudio_base_url: str = Field(default="http://localhost:1234/v1", alias="LMSTUDIO_BASE_URL")
+
+
     lmstudio_model: str = Field(default="prism-ml/bonsai-27b", alias="LMSTUDIO_MODEL")
     ollama_host: str = Field(default="http://localhost:11434", alias="OLLAMA_HOST")
     ollama_base_url: str = Field(default="http://localhost:11434", alias="OLLAMA_BASE_URL")

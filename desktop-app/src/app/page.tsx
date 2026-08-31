@@ -178,7 +178,11 @@ export default function Home() {
         onClose={() => setRightPanelOpen(false)}
         activeSessionId={chat.activeSessionId}
         activeProjectId={activeProjectId}
+        retrievalContext={chat.retrievalContext}
+        activitySteps={chat.activitySteps}
       />
+
+
 
       {/* Settings Modal */}
       <SettingsDialog

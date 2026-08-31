@@ -296,6 +296,10 @@ class AgentOrchestrator:
         reliability_monitor: Optional[ReliabilityMonitor] = None,
         tts_engine: Optional[ChatterboxEngine] = None,
         voice_output_enabled: Optional[bool] = None,
+        context_manager: Optional[Any] = None,
+        retriever: Optional[Any] = None,
+        tool_registry: Optional[Any] = None,
+        agent_loop: Optional[Any] = None,
         # Backward compatibility parameters
         ollama_client: Optional[Any] = None,
         lmstudio_client: Optional[Any] = None,
@@ -323,10 +327,43 @@ class AgentOrchestrator:
         self.voice_output_enabled = (
             voice_output_enabled if voice_output_enabled is not None else settings.voice_output_enabled
         )
+
+        from app.memory.context_manager import ContextManager
+        from app.rag.retriever import HybridRetriever
+        from app.tools.registry import ToolRegistry
+        from app.tools.filesystem import (
+            ReadFileTool,
+            WriteFileTool,
+            EditFileTool,
+            CreateDirectoryTool,
+            ListDirectoryTool,
+        )
+        from app.tools.terminal import TerminalExecuteTool
+        from app.agent.loop import AgentLoop
+
+        self.context_manager = context_manager or ContextManager(memory_store=self.memory_store)
+        self.retriever = retriever or HybridRetriever()
+
+        if tool_registry is not None:
+            self.tool_registry = tool_registry
+        else:
+            self.tool_registry = ToolRegistry()
+            self.tool_registry.register(ReadFileTool())
+            self.tool_registry.register(WriteFileTool())
+            self.tool_registry.register(EditFileTool())
+            self.tool_registry.register(CreateDirectoryTool())
+            self.tool_registry.register(ListDirectoryTool())
+            self.tool_registry.register(TerminalExecuteTool())
+
+        self.agent_loop = agent_loop or AgentLoop(tool_registry=self.tool_registry)
+
+
         self.openrouter_client = openrouter_client or OpenRouterClient(
             api_key=settings.openrouter_api_key,
             base_url=settings.openrouter_base_url
         )
+
+
 
     def _build_attachment_prompt(
         self,
@@ -515,12 +552,15 @@ class AgentOrchestrator:
         effective_mode_str = (chat_mode or session_data.get("chat_mode") or "WORKSPACE").upper()
         resolved_chat_mode = ChatMode.SYSTEM if effective_mode_str == "SYSTEM" else ChatMode.WORKSPACE
 
-        # 1. Routing Decision
+        # 1. Routing Decision made first (Amendment 2)
         decision = self.router.evaluate(
             message=user_message,
             requested_mode=requested_mode,
             requested_model=requested_model
         )
+        is_fast = "fast" in (decision.model or "").lower() or decision.mode == "fast"
+        resolved_ctx_tokens = settings.llama_ctx_size_fast if is_fast else settings.llama_ctx_size_main
+
         logger.info("Routing decision: mode='%s', provider='%s', model='%s', reason='%s'",
                     decision.mode, decision.provider, decision.model, decision.reason)
 
@@ -531,17 +571,9 @@ class AgentOrchestrator:
             logger.info("Active dynamic skills matched: %s", active_skill_names)
 
         skill_prompt_injection = self.skills_loader.build_skill_prompt_injection(matched_skills)
-        attachment_prompt_injection = self._build_attachment_prompt(active_session_id, project_id=project_id, direct_attachments=attachments)
-        base_system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
-        composed_system_prompt = base_system_prompt + skill_prompt_injection + attachment_prompt_injection
+        base_system_prompt = (system_prompt or DEFAULT_SYSTEM_PROMPT) + skill_prompt_injection
 
-
-        # 3. Dynamic Tool Aggregation
-        mcp_tools = self.mcp_manager.get_tool_definitions()
-        relevant_base_tools = get_relevant_tools(user_message, chat_mode=effective_mode_str, matched_skills=matched_skills)
-        combined_tools = (relevant_base_tools + mcp_tools) if relevant_base_tools else []
-
-        # 4. Memory History & Context Compaction
+        # 3. Compaction Evaluation (Step 4C)
         history = self.memory_store.get_messages(active_session_id)
         current_turn = {"role": "user", "content": user_message}
         full_conversation = history + [current_turn]
@@ -552,7 +584,6 @@ class AgentOrchestrator:
             model=decision.model,
             threshold_override=compaction_threshold_override
         )
-
         if compaction_info:
             logger.info("Compaction applied to session '%s': %s", active_session_id, compaction_info)
             self.memory_store.replace_messages(active_session_id, compacted_msgs[:-1])
@@ -561,23 +592,51 @@ class AgentOrchestrator:
                 strategy=compaction_info["strategy"],
                 tokens_before=compaction_info["tokens_before"],
                 tokens_after=compaction_info["tokens_after"],
-                details=compaction_info.get("details")
+                details=json.dumps(compaction_info.get("details")) if isinstance(compaction_info.get("details"), dict) else compaction_info.get("details")
             )
+
+        # 4. RAG Retrieval in WORKSPACE mode
+        retrieved_chunks = []
+        if effective_mode_str == "WORKSPACE" and project_id:
+            try:
+                retrieved_chunks = self.retriever.retrieve(
+                    project_id=project_id,
+                    query=user_message,
+                    top_k=settings.context_tier3_max_chunks
+                )
+            except Exception as rag_err:
+                logger.warning("RAG retrieval failed during execution: %s", rag_err)
+
+        # 5. Strict Tier-Based Token Budgeting
+        context_pkg = self.context_manager.build_context(
+            session_id=active_session_id,
+            user_message=user_message,
+            system_prompt=base_system_prompt,
+            project_id=project_id,
+            attachments=attachments,
+            retrieved_chunks=retrieved_chunks,
+            chat_mode=effective_mode_str,
+            max_context_tokens=resolved_ctx_tokens
+        )
+
+        # 6. Dynamic Tool Aggregation
+        mcp_tools = self.mcp_manager.get_tool_definitions()
+        relevant_base_tools = get_relevant_tools(user_message, chat_mode=effective_mode_str, matched_skills=matched_skills)
+        combined_tools = (relevant_base_tools + mcp_tools) if relevant_base_tools else []
 
         self.memory_store.append_message(active_session_id, role="user", content=user_message)
 
-        # 5. Determine Profile (coding vs general)
+        # 7. Determine Profile (coding vs general)
         is_tool_or_coding = bool(combined_tools) or any(
             kw in user_message.lower() for kw in ["code", "file", "func", "def ", "class ", "test", "run", "script", "debug"]
         )
         profile = "coding" if is_tool_or_coding else "general"
 
-        # 6. Dispatch: OpenRouter Cloud (if enabled)
+        # 8. Dispatch: OpenRouter Cloud (if enabled)
         if decision.provider == "openrouter" and getattr(settings, "cloud_routing_enabled", False):
             try:
-                dispatch_messages = [{"role": "system", "content": composed_system_prompt}] + compacted_msgs
                 openrouter_res = await self.openrouter_client.chat(
-                    messages=dispatch_messages,
+                    messages=context_pkg.messages,
                     model=decision.model
                 )
                 content = ""
@@ -604,10 +663,10 @@ class AgentOrchestrator:
                 result = await self._run_provider_loop(
                     provider=fallback_provider,
                     session_id=active_session_id,
-                    conversation_messages=compacted_msgs,
+                    conversation_messages=context_pkg.messages,
                     tools=combined_tools,
                     model="main",
-                    system_prompt=composed_system_prompt,
+                    system_prompt=context_pkg.system_prompt,
                     approved_action_ids=approved_action_ids,
                     max_iterations=max_iterations,
                     route_reason=f"{decision.reason} [Fallback: OpenRouter failed ({e}), used local llama.cpp]",
@@ -619,16 +678,16 @@ class AgentOrchestrator:
                 result.active_skills = active_skill_names
                 return result
 
-        # 7. Dispatch: Local Primary Provider (llama.cpp) or Fallback (Ollama)
+        # 9. Dispatch: Local Primary Provider (llama.cpp) or Fallback (Ollama)
         target_provider = self.provider if isinstance(self.provider, _LegacyClientAdapter) else get_model_provider(decision.provider)
         try:
             result = await self._run_provider_loop(
                 provider=target_provider,
                 session_id=active_session_id,
-                conversation_messages=compacted_msgs,
+                conversation_messages=context_pkg.messages,
                 tools=combined_tools,
                 model=decision.model,
-                system_prompt=composed_system_prompt,
+                system_prompt=context_pkg.system_prompt,
                 approved_action_ids=approved_action_ids,
                 max_iterations=max_iterations,
                 route_reason=decision.reason,
@@ -647,10 +706,10 @@ class AgentOrchestrator:
                     result = await self._run_provider_loop(
                         provider=fallback_provider,
                         session_id=active_session_id,
-                        conversation_messages=compacted_msgs,
+                        conversation_messages=context_pkg.messages,
                         tools=combined_tools,
                         model=fallback_model,
-                        system_prompt=composed_system_prompt,
+                        system_prompt=context_pkg.system_prompt,
                         approved_action_ids=approved_action_ids,
                         max_iterations=max_iterations,
                         route_reason=f"{decision.reason} [Fallback: llama.cpp failed ({e}), used local Ollama ({fallback_model})]",
@@ -665,6 +724,7 @@ class AgentOrchestrator:
                     logger.error("Fallback to Ollama also failed: %s", fallback_err)
                     raise e
             raise
+
 
     async def _run_provider_loop(
         self,
@@ -1098,36 +1158,58 @@ class AgentOrchestrator:
         effective_mode_str = (chat_mode or session_data.get("chat_mode") or "WORKSPACE").upper()
         resolved_chat_mode = ChatMode.SYSTEM if effective_mode_str == "SYSTEM" else ChatMode.WORKSPACE
 
+        # 1. Model routing decision made first (Amendment 2)
         decision = self.router.evaluate(
             message=user_message,
             requested_mode=requested_mode,
             requested_model=requested_model
         )
+        is_fast = "fast" in (decision.model or "").lower() or decision.mode == "fast"
+        resolved_ctx_tokens = settings.llama_ctx_size_fast if is_fast else settings.llama_ctx_size_main
 
+        # 2. Match skills & prepare base prompts
         matched_skills = self.skills_loader.match_skills(user_message)
         active_skill_names = [s.name for s in matched_skills]
         skill_prompt_injection = self.skills_loader.build_skill_prompt_injection(matched_skills)
-        attachment_prompt_injection = self._build_attachment_prompt(active_session_id, project_id=project_id, direct_attachments=attachments)
-        base_system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
-        composed_system_prompt = base_system_prompt + skill_prompt_injection + attachment_prompt_injection
+        base_system_prompt = (system_prompt or DEFAULT_SYSTEM_PROMPT) + skill_prompt_injection
 
+        # 3. RAG Retrieval in WORKSPACE mode
+        retrieved_chunks = []
+        if effective_mode_str == "WORKSPACE" and project_id:
+            try:
+                retrieved_chunks = self.retriever.retrieve(
+                    project_id=project_id,
+                    query=user_message,
+                    top_k=settings.context_tier3_max_chunks
+                )
+            except Exception as rag_err:
+                logger.warning("RAG retrieval failed during stream setup: %s", rag_err)
+
+        # 4. Strict Tier-Based Token Budgeting
+        context_pkg = self.context_manager.build_context(
+            session_id=active_session_id,
+            user_message=user_message,
+            system_prompt=base_system_prompt,
+            project_id=project_id,
+            attachments=attachments,
+            retrieved_chunks=retrieved_chunks,
+            chat_mode=effective_mode_str,
+            max_context_tokens=resolved_ctx_tokens
+        )
+
+        # 5. Emit retrieval_context SSE event for UI observability
+        yield {
+            "event": "retrieval_context",
+            "data": {
+                "chunks_used": context_pkg.retrieved_chunks_used,
+                "chunks_dropped": context_pkg.retrieved_chunks_dropped,
+                "budget_report": context_pkg.budget_report
+            }
+        }
 
         mcp_tools = self.mcp_manager.get_tool_definitions()
         relevant_base_tools = get_relevant_tools(user_message, chat_mode=effective_mode_str, matched_skills=matched_skills)
         combined_tools = (relevant_base_tools + mcp_tools) if relevant_base_tools else []
-
-        history = self.memory_store.get_messages(active_session_id)
-        current_turn = {"role": "user", "content": user_message}
-        full_conversation = history + [current_turn]
-
-        compacted_msgs, compaction_info = await self.compactor.compact(
-            messages=full_conversation,
-            client=self.provider,
-            model=decision.model,
-            threshold_override=compaction_threshold_override
-        )
-        if compaction_info:
-            self.memory_store.replace_messages(active_session_id, compacted_msgs[:-1])
 
         self.memory_store.append_message(active_session_id, role="user", content=user_message)
 
@@ -1139,12 +1221,12 @@ class AgentOrchestrator:
         if decision.provider == "openrouter" and getattr(settings, "cloud_routing_enabled", False):
             async for ev in self._run_openrouter_stream_loop(
                 session_id=active_session_id,
-                conversation_messages=compacted_msgs,
+                conversation_messages=context_pkg.messages,
                 model=decision.model,
-                system_prompt=composed_system_prompt,
+                system_prompt=context_pkg.system_prompt,
                 route_reason=decision.reason,
                 active_skills=active_skill_names,
-                compaction_info=compaction_info
+                compaction_info=None
             ):
                 yield ev
             return
@@ -1153,19 +1235,20 @@ class AgentOrchestrator:
         async for ev in self._run_provider_stream_loop(
             provider=target_provider,
             session_id=active_session_id,
-            conversation_messages=compacted_msgs,
+            conversation_messages=context_pkg.messages,
             tools=combined_tools,
             model=decision.model,
-            system_prompt=composed_system_prompt,
+            system_prompt=context_pkg.system_prompt,
             approved_action_ids=approved_action_ids,
             max_iterations=max_iterations,
             route_reason=decision.reason,
             chat_mode=resolved_chat_mode,
             profile=profile,
             active_skills=active_skill_names,
-            compaction_info=compaction_info
+            compaction_info=None
         ):
             yield ev
+
 
     async def _run_provider_stream_loop(
         self,

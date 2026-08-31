@@ -161,12 +161,90 @@ export interface SSEToolDraftEvent {
   args_delta: string;
 }
 
+export interface SSERetrievalContextEvent {
+  chunks_used: Array<{
+    chunk_id?: string;
+    file_path?: string;
+    file_name?: string;
+    symbol_name?: string;
+    symbol_type?: string;
+    start_line?: number;
+    end_line?: number;
+    content?: string;
+    score?: number;
+    similarity_score?: number;
+    rrf_score?: number;
+  }>;
+  chunks_dropped: Array<{
+    chunk_id?: string;
+    file_path?: string;
+    file_name?: string;
+    symbol_name?: string;
+    symbol_type?: string;
+  }>;
+  budget_report: {
+    total_context_window: number;
+    reserved_output_tokens: number;
+    available_input_budget: number;
+    tier1_system_tokens: number;
+    tier2_user_tokens: number;
+    tier3_rag_tokens: number;
+    tier4_history_tokens: number;
+    tier5_summary_included: boolean;
+    total_input_tokens_used: number;
+    remaining_unallocated_tokens: number;
+    chunks_used_count: number;
+    chunks_dropped_count: number;
+    chat_mode: string;
+  };
+}
+
+export interface SSEToolCallEvent {
+  tool: string;
+  args: Record<string, unknown>;
+  call_id?: string;
+}
+
+export interface SSEToolResultEvent {
+  tool: string;
+  status: "success" | "error";
+  summary?: string;
+  result?: string;
+  call_id?: string;
+  latency_ms?: number;
+  truncated?: boolean;
+}
+
+export interface SSEAgentStatusEvent {
+  status: string;
+  iteration?: number;
+  run_id?: string;
+  tool?: string;
+}
+
+export interface ActivityStep {
+  id: string;
+  timestamp: Date;
+  type: "status" | "tool_call" | "tool_result";
+  tool?: string;
+  status?: string;
+  args?: Record<string, unknown>;
+  result?: string;
+  summary?: string;
+  latency_ms?: number;
+  truncated?: boolean;
+}
+
 export interface SSEEventMap {
   token: SSETokenEvent;
   tool_draft: SSEToolDraftEvent;
   tool_start: SSEToolStartEvent;
   tool_end: SSEToolEndEvent;
+  tool_call: SSEToolCallEvent;
+  tool_result: SSEToolResultEvent;
+  agent_status: SSEAgentStatusEvent;
   confirmation_required: SSEConfirmationRequiredEvent;
+  retrieval_context: SSERetrievalContextEvent;
   done: SSEDoneEvent;
   error: SSEErrorEvent;
 }
@@ -176,7 +254,13 @@ export interface SSEEventCallbacks {
   onToolDraft?: (data: SSEToolDraftEvent) => void;
   onToolStart?: (data: SSEToolStartEvent) => void;
   onToolEnd?: (data: SSEToolEndEvent) => void;
+  onToolCall?: (data: SSEToolCallEvent) => void;
+  onToolResult?: (data: SSEToolResultEvent) => void;
+  onAgentStatus?: (data: SSEAgentStatusEvent) => void;
   onConfirmationRequired?: (data: SSEConfirmationRequiredEvent) => void;
+  onRetrievalContext?: (data: SSERetrievalContextEvent) => void;
   onDone?: (data: SSEDoneEvent) => void;
   onError?: (data: SSEErrorEvent) => void;
 }
+
+

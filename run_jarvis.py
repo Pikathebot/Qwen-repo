@@ -127,6 +127,15 @@ def acquire_single_instance_lock(port: int = 57321):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Jarvis AI Assistant Desktop Launcher")
+    parser.add_argument("--legacy-ui", action="store_true", help="Launch legacy pywebview UI instead of Next.js desktop-app")
+    args, _ = parser.parse_known_args()
+
+    if args.legacy_ui:
+        os.environ["JARVIS_USE_LEGACY_UI"] = "1"
+        logger.info("Launcher configured to use legacy desktop UI.")
+
     lock_socket = acquire_single_instance_lock()
     if lock_socket is None:
         logger.info("Exiting duplicate launch attempt (focus signal sent).")
@@ -151,6 +160,7 @@ def main():
         logger.info("Launching Jarvis Desktop UI (Spotlight & System Tray)...")
         from desktop.app import launch_desktop
         launch_desktop(lock_socket)
+
 
     except Exception as e:
         logger.error("Error in Jarvis launcher: %s\n%s", e, traceback.format_exc())

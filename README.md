@@ -1,46 +1,65 @@
 # Jarvis — Private Local AI Assistant for Windows
 
-A private, fast, and lightweight local AI assistant for Windows 11 powered by Ollama (`qwen3.5:9b`), with Raycast-inspired glassmorphic floating UI, Windows System Tray integration, Model Context Protocol (MCP), dynamic skills loading, hardware resource governance, and voice interaction.
+A private, fast, and lightweight local AI assistant for Windows 11 powered by native `llama-server.exe` (llama.cpp) running **Qwen3.5-9B** and **Qwen3.5-4B** with full GPU offload (`-ngl 99 --no-mmap`), a modern Next.js/React desktop UI with workspace switching, 4-tab RightPanel, attachments, artifacts versioning, Model Context Protocol (MCP), dynamic skills loading, hardware resource governance, and voice interaction.
 
 ---
 
 ## Key Features
 
-- **Floating Spotlight UI**: Sleek, keyboard-first desktop overlay triggered globally with `Alt+Space` or `Ctrl+Space`.
-- **Windows System Tray**: Background service managing process lifecycles and displaying live hardware status.
-- **Hardware Resource Governor**: Real-time PyNVML GPU/VRAM telemetry protecting your RTX 4060 GPU and CPU from overload.
+- **Native llama.cpp Execution**: Primary runtime uses `llama-server.exe` on port 8001 with 100% GPU VRAM offload and `-no-mmap` to conserve system RAM.
+- **Canonical Next.js Desktop UI**: Polished React + Next.js + Tailwind CSS interface featuring Project Workspaces, 4-tab RightPanel (Artifacts, Files, Context, Activity), and Paperclip Attachment Composer.
+- **SSE Streaming & FastAPI Backend**: Real-time token streaming via `/chat/stream` with tool execution updates and final metadata.
+- **Unified SQLModel & Alembic Database**: Robust relational schema managing Projects, Sessions, Attachments, Artifacts, and Version History with automatic startup migrations.
+- **Hardware Resource Governor (V2)**: Real-time PyNVML GPU/VRAM telemetry protecting your RTX 4060 GPU and CPU from overload.
 - **Deterministic Safety Permissions**: $O(1)$ hardcoded security tiering (`LOW_RISK`, `CONFIRMATION_REQUIRED`, `HIGH_RISK`) with SHA256 action approval tokens.
-- **Model Routing (Normal vs Heavy)**: Runs locally on Ollama for maximum privacy, and dynamically routes heavy math/architecture tasks to OpenRouter when needed.
-- **SQLite Short-Term Memory**: Multi-turn conversation store with automatic progressive context compaction (16,000 token context window).
+- **Model Routing (Normal vs Heavy)**: Local inference by default, dynamically routing complex reasoning to OpenRouter when enabled.
 - **Model Context Protocol (MCP)**: Bidirectional JSON-RPC 2.0 stdio client for external tools and servers.
 - **Dynamic Skills Loader**: Extensible Markdown-based domain skills (`skills/*.md`) with trigger keyword matching.
-- **Hands-Free Voice & Wake-Word**: Wake-word detection ("Jarvis" / "Hey Jarvis") with speech recognition and natural text-to-speech sanitization.
+- **Hands-Free Voice & Wake-Word**: Wake-word detection ("Jarvis" / "Hey Jarvis") with Chatterbox TTS engine.
 
 ---
 
 ## Quick Start
 
 ### 1. Launch Jarvis
-Double-click **`Jarvis Assistant`** on your Desktop or run:
+Run the batch launcher:
 ```powershell
-d:/JARVIS/.venv/Scripts/python d:/JARVIS/run_jarvis.py
+.\Jarvis.bat
+```
+*(or run `.\.venv\Scripts\python.exe run_jarvis.py`)*
+
+To launch with legacy pywebview UI fallback:
+```powershell
+.\.venv\Scripts\python.exe run_jarvis.py --legacy-ui
 ```
 
-### 2. Pin to Windows Taskbar
-1. Right-click the **`Jarvis Assistant`** shortcut on your Desktop or in `D:\JARVIS\`.
-2. Select **"Pin to taskbar"**.
+### 2. Run in Development Mode
+**Backend:**
+```powershell
+cd backend
+..\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+**Frontend:**
+```powershell
+cd desktop-app
+npm run dev
+```
+Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ### 3. Run Automated Tests
 ```powershell
-$env:PYTHONPATH="d:/JARVIS/backend;d:/JARVIS"; d:/JARVIS/.venv/Scripts/pytest d:/JARVIS/backend/tests -v
+cd backend
+..\.venv\Scripts\python.exe -m pytest -o pythonpath=". .." tests/
 ```
 
 ---
 
 ## Documentation
 
-Detailed documentation is available in the [`docs/`](file:///d:/JARVIS/docs) directory:
-- [**ARCHITECTURE.md**](file:///d:/JARVIS/docs/ARCHITECTURE.md): Complete architectural deep dive across all 8 subsystem layers.
-- [**API_REFERENCE.md**](file:///d:/JARVIS/docs/API_REFERENCE.md): Comprehensive REST API endpoint reference.
-- [**USER_GUIDE.md**](file:///d:/JARVIS/docs/USER_GUIDE.md): Keyboard shortcuts, voice controls, custom skills, and configuration.
-- [**PLAN.md**](file:///d:/JARVIS/PLAN.md): Implementation milestones and design roadmap.
+Detailed technical documentation is available in the [`docs/`](docs/) directory:
+- [**AI_AGENT_CONTEXT.md**](docs/AI_AGENT_CONTEXT.md): Master onboarding guide for AI coding assistants.
+- [**ARCHITECTURE.md**](docs/ARCHITECTURE.md): Architectural deep dive across backend subsystems.
+- [**API_REFERENCE.md**](docs/API_REFERENCE.md): REST & SSE API endpoint reference.
+- [**USER_GUIDE.md**](docs/USER_GUIDE.md): Workspaces, keyboard shortcuts, custom skills, and configuration.
+- [**PLAN.md**](PLAN.md): Implementation milestones and build plan.

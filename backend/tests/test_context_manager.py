@@ -1,0 +1,197 @@
+import pytest
+from sqlmodel import SQLModel, create_engine, Session
+
+from app.memory.token_counter import TokenCounter
+from app.memory.context_manager import ContextManager, ContextPackage
+from app.memory.store import MemoryStore
+from app.database.models import Session as DBSession, Message as DBMessage, CompactionEvent
+
+
+
+@pytest.fixture
+def memory_test_env(tmp_path):
+    """Isolated SQLite database for ContextManager tests."""
+    test_db = tmp_path / "test_context_mem.db"
+    db_url = f"sqlite:///{test_db}"
+    engine = create_engine(db_url, connect_args={"check_same_thread": False})
+    SQLModel.metadata.create_all(engine)
+
+    def session_factory():
+        return Session(engine)
+
+    store = MemoryStore(session_factory=session_factory)
+    return store, tmp_path
+
+
+def test_token_counter_heuristic_and_messages():
+    counter = TokenCounter(chars_per_token=4.0)
+
+    # 40 characters ≈ 10 tokens
+    text = "a" * 40
+    assert counter.count(text) == 10
+
+    messages = [
+        {"role": "system", "content": "You are Jarvis."},
+        {"role": "user", "content": "Hello there!"}
+    ]
+    total = counter.count_messages(messages)
+    # Message framing (2 * 4 + 3) + content tokens
+    assert total > 10
+
+
+def test_context_manager_strict_budget_preserves_reserved_output(memory_test_env):
+    store, _ = memory_test_env
+    cm = ContextManager(
+        memory_store=store,
+        reserved_output_tokens=2048
+    )
+
+    pkg = cm.build_context(
+        user_message="Explain quantum computing in detail",
+        chat_mode="WORKSPACE",
+        max_context_tokens=16384
+    )
+
+    assert pkg.budget_report["total_context_window"] == 16384
+    assert pkg.budget_report["reserved_output_tokens"] == 2048
+    assert pkg.budget_report["available_input_budget"] == 14336
+    assert pkg.budget_report["total_input_tokens_used"] <= 14336
+    assert pkg.budget_report["remaining_unallocated_tokens"] >= 0
+
+
+def test_context_manager_tier1_and_tier2_priority(memory_test_env):
+    store, _ = memory_test_env
+    cm = ContextManager(memory_store=store)
+
+    system_prompt = "You are a specialized Unreal Engine assistant."
+    project_instructions = "Follow Unreal Engine 5.4 C++ naming conventions (A prefix for Actors)."
+    user_prompt = "How do I spawn an actor in UE5?"
+
+    pkg = cm.build_context(
+        user_message=user_prompt,
+        system_prompt=system_prompt,
+        project_instructions=project_instructions,
+        max_context_tokens=16384
+    )
+
+    # Verify Tier 1 System Prompt contains project instructions
+    assert "Unreal Engine assistant" in pkg.system_prompt
+    assert "Unreal Engine 5.4 C++ naming conventions" in pkg.system_prompt
+
+    # Verify user turn message
+    user_msgs = [m for m in pkg.messages if m.get("role") == "user"]
+    assert len(user_msgs) == 1
+    assert "How do I spawn an actor" in user_msgs[0]["content"]
+
+
+def test_context_manager_tier2_attachment_safeguard(memory_test_env):
+    store, _ = memory_test_env
+    cm = ContextManager(
+        memory_store=store,
+        max_attachment_tokens=100  # set low cap to trigger safeguard
+    )
+
+    massive_file_content = "def calculate_large_matrix():\n" + ("    x = 1\n" * 500)
+    attachments = [
+        {"filename": "huge_matrix.py", "content": massive_file_content}
+    ]
+
+    pkg = cm.build_context(
+        user_message="Refactor this matrix function",
+        attachments=attachments,
+        max_context_tokens=16384
+    )
+
+    user_msgs = [m for m in pkg.messages if m.get("role") == "user"]
+    assert len(user_msgs) == 1
+    user_text = user_msgs[0]["content"]
+
+    # Assert truncation warning is present
+    assert "[Attachment truncated due to size" in user_text
+    assert "Refactor this matrix function" in user_text
+
+
+import json
+
+def test_context_manager_tier3_drops_lowest_relevance_chunks_first(memory_test_env):
+    store, _ = memory_test_env
+    cm = ContextManager(
+        memory_store=store,
+        reserved_output_tokens=500
+    )
+
+    # Chunks ordered by relevance (c1 highest, c4 lowest) with realistic code sizes
+    retrieved_chunks = [
+        {"chunk_id": "c1", "file_name": "Combat.h", "content": "class ACombatCharacter : public ACharacter {\n" + ("    int health = 100;\n" * 15) + "};", "score": 9.5},
+        {"chunk_id": "c2", "file_name": "Weapon.h", "content": "class AWeapon : public AActor {\n" + ("    int damage = 50;\n" * 15) + "};", "score": 8.0},
+        {"chunk_id": "c3", "file_name": "Projectile.h", "content": "class AProjectile : public AActor {\n" + ("    float speed = 2000.f;\n" * 15) + "};", "score": 6.5},
+        {"chunk_id": "c4", "file_name": "Unrelated.h", "content": "class AInventory : public UObject {\n" + ("    int capacity = 20;\n" * 15) + "};", "score": 2.0},
+    ]
+
+    # Set small max_context_tokens so only highest-relevance chunks fit
+    pkg = cm.build_context(
+        user_message="How to equip weapon?",
+        retrieved_chunks=retrieved_chunks,
+        chat_mode="WORKSPACE",
+        max_context_tokens=650  # 650 - 500 reserved = 150 input budget
+    )
+
+    # Some chunks must be used (starting from c1), lower ones dropped
+    assert len(pkg.retrieved_chunks_used) >= 1
+    assert any(c["chunk_id"] == "c1" for c in pkg.retrieved_chunks_used)
+    assert pkg.budget_report["chunks_dropped_count"] >= 1
+
+
+def test_context_manager_tier4_truncates_oldest_and_uses_summary(memory_test_env):
+    store, _ = memory_test_env
+    session_id = "sess_history_test"
+    store.get_or_create_session(session_id)
+
+    # Add 8 messages
+    for i in range(1, 9):
+        store.append_message(session_id, role="user" if i % 2 != 0 else "assistant", content=f"Message step {i}: details about task with significant length to fill tokens.")
+
+    # Record rolling compaction summary
+    store.record_compaction(
+        session_id=session_id,
+        strategy="rolling_summary",
+        tokens_before=2000,
+        tokens_after=300,
+        details=json.dumps({"summary": "User established initial project setup and verified math helpers."})
+    )
+
+    cm = ContextManager(
+        memory_store=store,
+        reserved_output_tokens=200
+    )
+
+    pkg = cm.build_context(
+        session_id=session_id,
+        user_message="What is the next step?",
+        max_context_tokens=350  # tight budget
+    )
+
+    # Summary should be included when older messages overflow
+    assert pkg.budget_report["tier5_summary_included"] is True
+    assert any("Prior Conversation Summary" in m.get("content", "") for m in pkg.messages)
+
+
+
+def test_context_manager_system_mode_bypasses_rag(memory_test_env):
+    store, _ = memory_test_env
+    cm = ContextManager(memory_store=store)
+
+    retrieved_chunks = [
+        {"chunk_id": "c1", "file_name": "Combat.h", "content": "class ACombatCharacter {};", "score": 9.5}
+    ]
+
+    pkg = cm.build_context(
+        user_message="Change system theme",
+        retrieved_chunks=retrieved_chunks,
+        chat_mode="SYSTEM",
+        max_context_tokens=16384
+    )
+
+    # In SYSTEM mode, RAG chunks are not injected into system prompt
+    assert len(pkg.retrieved_chunks_used) == 0
+    assert "Relevant Workspace Context & Code" not in pkg.system_prompt

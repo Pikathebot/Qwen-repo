@@ -147,8 +147,14 @@ class RuntimeProcessManager:
             if await self.health_check(timeout=2.0):
                 if self._current_model_kind in (alias, model_kind) or self._current_model_kind is None:
                     self._current_model_kind = model_kind
-                    self._externally_managed = True
+                    # Invariant: _externally_managed must be True ONLY if the server was discovered
+                    # already running externally. If Jarvis spawned self._process, it remains False.
+                    if self._process is None or self._process.poll() is not None:
+                        self._externally_managed = True
+                    else:
+                        self._externally_managed = False
                     return True
+
 
                 # Different model kind requested -> trigger switch
                 logger.info(
@@ -225,8 +231,13 @@ class RuntimeProcessManager:
             await self._stop_internal()
             raise RuntimeError(f"llama-server failed to become healthy within {self.startup_timeout}s.")
 
-    async def _stop_internal(self) -> bool:
-        """Internal worker to stop the process without acquiring the lock."""
+    async def _stop_internal(self, sweep_all: bool = False) -> bool:
+        """
+        Internal worker to stop the process without acquiring the lock.
+        By default (sweep_all=False), terminates ONLY the tracked child process spawned by Jarvis.
+        If sweep_all=True is explicitly passed (e.g. emergency cleanup of stuck orphans),
+        a warning is logged and all system llama-server instances are terminated.
+        """
         self._current_model_kind = None
         self._externally_managed = False
 
@@ -248,34 +259,37 @@ class RuntimeProcessManager:
                 except Exception as e:
                     logger.debug("Error terminating tracked process: %s", e)
 
-        # 2. Terminate any orphan or lingering llama-server instances
-        import psutil
-        try:
-            for p in psutil.process_iter(['pid', 'name']):
-                try:
-                    p_name = (p.info.get('name') or "").lower()
-                    if "llama-server" in p_name:
-                        logger.info("Terminating llama-server process (PID %s) for VRAM release...", p.pid)
-                        p.terminate()
-                        try:
-                            p.wait(timeout=3)
-                        except psutil.TimeoutExpired:
-                            p.kill()
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
-        except Exception as e:
-            logger.debug("Error scanning for llama-server processes: %s", e)
+        # 2. Sweep all llama-server instances ONLY if explicitly requested
+        if sweep_all:
+            logger.warning("Emergency process sweep requested: terminating all system-wide llama-server processes.")
+            import psutil
+            try:
+                for p in psutil.process_iter(['pid', 'name']):
+                    try:
+                        p_name = (p.info.get('name') or "").lower()
+                        if "llama-server" in p_name:
+                            logger.info("Terminating orphaned llama-server process (PID %s)...", p.pid)
+                            p.terminate()
+                            try:
+                                p.wait(timeout=3)
+                            except psutil.TimeoutExpired:
+                                p.kill()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+            except Exception as e:
+                logger.debug("Error scanning for llama-server processes: %s", e)
 
-        logger.info("llama-server processes terminated. 100% GPU VRAM released.")
+        logger.info("llama-server stop routine complete. GPU VRAM released.")
         return True
 
-    async def stop(self) -> bool:
+    async def stop(self, sweep_all: bool = False) -> bool:
         """
         Gracefully terminate or kill the llama-server process.
         This provides deterministic 100% GPU VRAM release.
         """
         async with self._lock:
-            return await self._stop_internal()
+            return await self._stop_internal(sweep_all=sweep_all)
+
 
     async def switch_model(self, model_kind: str) -> bool:
         """

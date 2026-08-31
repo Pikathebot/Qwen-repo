@@ -36,6 +36,26 @@ async def test_ensure_running_noops_when_healthy():
 
 
 @pytest.mark.anyio
+async def test_ensure_running_recheck_keeps_externally_managed_false_for_jarvis_spawned():
+    pm = RuntimeProcessManager()
+    mock_proc = MagicMock()
+    mock_proc.poll = MagicMock(return_value=None)
+    mock_proc.pid = 8888
+    pm._process = mock_proc
+    pm._current_model_kind = "main"
+    pm._externally_managed = False
+
+    with patch.object(pm, "health_check", return_value=True), \
+         patch("subprocess.Popen") as mock_spawn:
+        res = await pm.ensure_running(model_kind="main")
+        assert res is True
+        mock_spawn.assert_not_called()
+        # Must stay False because Jarvis spawned it
+        assert pm.is_externally_managed is False
+
+
+
+@pytest.mark.anyio
 async def test_ensure_running_spawns_when_unhealthy():
     pm = RuntimeProcessManager(startup_timeout=5.0)
 
@@ -95,6 +115,40 @@ async def test_externally_managed_server_is_never_killed():
     res = await pm.stop()
     assert res is True
     assert pm._process is None
+
+
+@pytest.mark.anyio
+async def test_stop_does_not_sweep_unrelated_processes_by_default():
+    pm = RuntimeProcessManager()
+    pm._process = None
+
+    unrelated_proc = MagicMock()
+    unrelated_proc.info = {"pid": 55555, "name": "llama-server.exe"}
+    unrelated_proc.terminate = MagicMock()
+
+    with patch("psutil.process_iter", return_value=[unrelated_proc]) as mock_iter:
+        res = await pm.stop(sweep_all=False)
+        assert res is True
+        mock_iter.assert_not_called()
+        unrelated_proc.terminate.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_stop_sweeps_all_when_explicitly_requested():
+    pm = RuntimeProcessManager()
+    pm._process = None
+
+    unrelated_proc = MagicMock()
+    unrelated_proc.info = {"pid": 55555, "name": "llama-server.exe"}
+    unrelated_proc.terminate = MagicMock()
+    unrelated_proc.wait = MagicMock(return_value=0)
+
+    with patch("psutil.process_iter", return_value=[unrelated_proc]) as mock_iter:
+        res = await pm.stop(sweep_all=True)
+        assert res is True
+        mock_iter.assert_called_once()
+        unrelated_proc.terminate.assert_called_once()
+
 
 
 @pytest.mark.anyio

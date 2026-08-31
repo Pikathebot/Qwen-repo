@@ -113,10 +113,31 @@ compactor = ContextCompactor(
 )
 skills_loader = SkillsLoader()
 mcp_manager = MCPManager()
+
+from app.tools.registry import ToolRegistry
+from app.tools.filesystem import (
+    ReadFileTool,
+    WriteFileTool,
+    EditFileTool,
+    CreateDirectoryTool,
+    ListDirectoryTool,
+)
+from app.tools.terminal import TerminalExecuteTool
+
+tool_registry = ToolRegistry()
+tool_registry.register(ReadFileTool())
+tool_registry.register(WriteFileTool())
+tool_registry.register(EditFileTool())
+tool_registry.register(CreateDirectoryTool())
+tool_registry.register(ListDirectoryTool())
+tool_registry.register(TerminalExecuteTool())
+
+
 wake_detector = WakeWordDetector()
 transcriber = AudioTranscriber()
 synthesizer = VoiceSynthesizer()
 chatterbox_engine = ChatterboxEngine(governor=governor)
+
 
 
 @asynccontextmanager
@@ -184,16 +205,33 @@ app.include_router(artifacts_router)
 
 def _get_ui_directory() -> Optional[Path]:
     import sys
-    candidates = []
+    import os
+
+    use_legacy = os.environ.get("JARVIS_USE_LEGACY_UI", "").lower() in ("1", "true", "yes")
+
+    root = Path(__file__).resolve().parent.parent.parent
     if getattr(sys, "frozen", False):
         if hasattr(sys, "_MEIPASS"):
-            candidates.append(Path(sys._MEIPASS) / "desktop" / "ui")
-        candidates.append(Path(sys.executable).resolve().parent / "desktop" / "ui")
+            root = Path(sys._MEIPASS)
+        else:
+            root = Path(sys.executable).resolve().parent
+
+    candidates = []
+    if not use_legacy:
+        # Prefer canonical desktop-app/out (Next.js / React build)
+        candidates.extend([
+            root / "desktop-app" / "out",
+            Path.cwd() / "desktop-app" / "out",
+            Path(__file__).resolve().parent.parent / "desktop-app" / "out",
+        ])
+
+    # Fallback to legacy desktop/ui
     candidates.extend([
-        Path(__file__).resolve().parent.parent.parent / "desktop" / "ui",
-        Path(__file__).resolve().parent.parent / "desktop" / "ui",
+        root / "desktop" / "ui",
         Path.cwd() / "desktop" / "ui",
+        Path(__file__).resolve().parent.parent / "desktop" / "ui",
     ])
+
     for c in candidates:
         if c.exists() and (c / "index.html").exists():
             return c
@@ -201,7 +239,11 @@ def _get_ui_directory() -> Optional[Path]:
 
 UI_DIR = _get_ui_directory()
 if UI_DIR:
+    next_dir = UI_DIR / "_next"
+    if next_dir.exists() and next_dir.is_dir():
+        app.mount("/_next", StaticFiles(directory=str(next_dir)), name="next_assets")
     app.mount("/ui", StaticFiles(directory=str(UI_DIR), html=True), name="ui")
+
 
 
 
@@ -733,7 +775,8 @@ async def chat(request: ChatRequest):
         skills_loader=skills_loader,
         mcp_manager=mcp_manager,
         reliability_monitor=reliability_monitor,
-        tts_engine=chatterbox_engine
+        tts_engine=chatterbox_engine,
+        tool_registry=tool_registry
     )
 
     try:
@@ -804,8 +847,10 @@ async def chat_stream(request: ChatRequest):
         skills_loader=skills_loader,
         mcp_manager=mcp_manager,
         reliability_monitor=reliability_monitor,
-        tts_engine=chatterbox_engine
+        tts_engine=chatterbox_engine,
+        tool_registry=tool_registry
     )
+
 
     async def event_generator():
         try:

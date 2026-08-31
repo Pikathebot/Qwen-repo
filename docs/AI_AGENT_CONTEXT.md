@@ -4,18 +4,27 @@
 
 ---
 
-## 1. Executive Summary
+## 1. Executive Summary & Current Truth
 
-**Jarvis** is a private, lightweight, and fast local AI desktop assistant built specifically for Windows 11. It features a Raycast/Spotlight-style floating glassmorphic interface triggered globally via `Alt+Space` or `Ctrl+Space`.
+**Jarvis** is a private, lightweight, and fast local AI desktop assistant built specifically for Windows 11 and NVIDIA RTX 4060 hardware constraints.
 
-### Core Capabilities:
-1. **Local-First Inference**: Runs on local LLMs via LM Studio (`prism-ml/bonsai-27b`) or Ollama (`hermes3:8b` / `qwen3.5:9b`).
-2. **Dynamic Model Routing**: Intelligently detects high-complexity tasks (math proofs, deep system architecture, large code refactors) and routes them to OpenRouter (`meta-llama/llama-3.3-70b-instruct`) while keeping standard tasks local.
-3. **Hardware Resource Governor (V2)**: Real-time telemetry monitoring NVIDIA RTX 4060 GPU utilization, VRAM (MB/%), CPU, and RAM via `nvidia-ml-py` (PyNVML) and `psutil`. Queues or rejects incoming tasks when thresholds (e.g. 90% VRAM) are exceeded.
-4. **Deterministic $O(1)$ Safety Permissions**: Hardcoded zero-hallucination security table classifying actions into `LOW_RISK`, `CONFIRMATION_REQUIRED`, and `HIGH_RISK`. Potentially dangerous actions return cryptographic SHA-256 tokens (`act_<hash>`) requiring user confirmation before execution.
-5. **Model Context Protocol (MCP)**: Implements standard bidirectional JSON-RPC 2.0 stdio client bridge to external tools and servers.
-6. **Dynamic Skills Loader**: Extensible markdown-based domain skills (`skills/*.md`) with trigger keyword matching injected into prompts on-demand.
-7. **Progressive Short-Term Memory**: SQLite conversation store with two-stage compaction (verbose tool output truncation + LLM turn summarization).
+### Current System Truth:
+1. **Primary Engine & Inference**: Native `llama-server.exe` (llama.cpp) running on `http://127.0.0.1:8001` managed by `RuntimeProcessManager`.
+   - **Primary Model**: Qwen3.5-9B Q4_K_M (`llama_model_main`)
+   - **Fast Model**: Qwen3.5-4B Q4_K_M (`llama_model_fast`)
+   - **Execution Flags**: Full GPU offload (`-ngl 99`) with memory-mapping disabled (`--no-mmap`) to conserve system RAM.
+   - **Legacy Engines**: Ollama and LM Studio are DEPRECATED and retained only for optional fallback.
+2. **Process-Based VRAM Eviction**: Unloading models is handled directly via `RuntimeProcessManager.stop()` releasing 100% of GPU VRAM on demand (`POST /models/unload`).
+3. **Backend**: FastAPI running on `http://127.0.0.1:8000`, featuring real-time Server-Sent Events (SSE) streaming via `POST /chat/stream` and standard `POST /chat`.
+4. **Database & Migrations**: Unified SQLModel ORM + Alembic database (`data/jarvis_memory.db`), with automated migrations executed on FastAPI startup.
+5. **Project Workspaces & Section 7 Filesystem**: Hierarchical workspace storage under `${WORKSPACE_PATH}/projects/{project_id}/` (`files/`, `knowledge/`, `artifacts/`, `memory/`, `indexes/`) managed via `/api/projects`.
+6. **Artifacts & Attachments**:
+   - **User Attachments**: Uploaded via `POST /api/upload` into project `files/` directory, tracked in `attachments` table, and automatically injected into LLM turn context.
+   - **AI Artifacts**: Durable agent outputs tracked in `artifacts` and `artifact_versions` tables with full version history (`POST /api/artifacts`, `GET /api/artifacts/{id}/versions`).
+7. **Canonical Desktop Frontend**: React 14 + Next.js + Tailwind CSS + TypeScript in [`desktop-app/`](../desktop-app/), built statically to `desktop-app/out/` and served via FastAPI at `/ui`. Legacy pywebview UI in `desktop/` is deprecated and accessible only via `--legacy-ui`.
+8. **Hardware Resource Governor (V2)**: Real-time telemetry monitoring NVIDIA RTX 4060 GPU utilization, VRAM, CPU, and RAM via `nvidia-ml-py` (PyNVML) and `psutil`. Queues or rejects incoming tasks when safety thresholds are breached.
+9. **Deterministic $O(1)$ Safety Permissions**: Hardcoded zero-hallucination security table classifying actions into `LOW_RISK`, `CONFIRMATION_REQUIRED`, and `HIGH_RISK`. Potentially dangerous actions return cryptographic SHA-256 tokens (`act_<hash>`) requiring user confirmation before execution.
+10. **MCP & Skills Subsystems**: Model Context Protocol JSON-RPC 2.0 stdio bridge and dynamic YAML frontmatter markdown skills (`skills/*.md`).
 
 ---
 
@@ -27,55 +36,44 @@ JARVIS/
 ├── Jarvis.bat                      # Windows batch launcher
 ├── README.md                       # High-level overview & quickstart
 ├── PLAN.md                         # Milestone implementation roadmap
-├── STAGE_B_AND_GOVERNOR_V2_DIFF_REPORT.md  # Architectural diff and audit report
 ├── governor_watchlist.json         # Process names monitored by the Resource Governor
 │
 ├── docs/                           # Exhaustive technical documentation
-│   ├── ARCHITECTURE.md             # 8-layer subsystem deep dive
+│   ├── ARCHITECTURE.md             # Subsystem deep dive
 │   ├── API_REFERENCE.md            # REST API endpoints & request/response schemas
 │   ├── USER_GUIDE.md               # User interaction, hotkeys, custom skills
-│   ├── PLAN.md                     # Engineering roadmap & specifications
-│   ├── GOVERNOR_V2_STAGE_1_SPEC.md # Telemetry & process watcher spec
-│   ├── GOVERNOR_V2_STAGE_3_SPEC.md # Governor V2 stage 3 spec
-│   ├── STAGE_A_IMPLEMENTATION_SPEC.md # Stage A implementation spec
 │   └── AI_AGENT_CONTEXT.md         # This AI Agent Onboarding Guide
 │
 ├── backend/                        # FastAPI Backend Application
+│   ├── alembic/                    # Alembic schema migrations
+│   │   └── versions/               # Version scripts (001_initial, 002_project_ext, 003_attachments)
 │   ├── app/
 │   │   ├── main.py                 # FastAPI application & router mounting
 │   │   ├── config.py               # Pydantic Settings & environment variables
+│   │   ├── database/               # SQLModel engine, session factory & DB models
+│   │   │   ├── models.py           # SQLModel table definitions (Project, Session, Attachment, Artifact, etc.)
+│   │   │   └── session.py          # SessionLocal factory & get_session dependency
+│   │   ├── routers/                # Modular FastAPI APIRouters
+│   │   │   ├── projects.py         # Project workspace CRUD & directory generator
+│   │   │   └── artifacts.py        # Artifacts, version history & secure file upload
 │   │   ├── agent/
-│   │   │   ├── orchestrator.py     # Multi-turn agent loop & execution engine
+│   │   │   ├── orchestrator.py     # Multi-turn agent loop, attachment injection & execution engine
+│   │   │   ├── runtime_process_manager.py # Native llama-server.exe manager with --no-mmap
+│   │   │   ├── model_provider.py   # Model provider interface & LlamaCppProvider
 │   │   │   ├── model_router.py     # Local vs Heavy model router
 │   │   │   ├── permissions.py      # Deterministic O(1) safety permission engine
-│   │   │   ├── ollama_client.py    # Local Ollama HTTP API client
-│   │   │   ├── lmstudio_client.py  # Local LM Studio OpenAI-compatible client
 │   │   │   ├── openrouter_client.py# OpenRouter cloud client for Heavy Mode
 │   │   │   ├── validator.py        # Tool argument signature introspection
-│   │   │   └── tools/              # Built-in native tools
-│   │   │       ├── registry.py     # Tool registry & schema extractor
-│   │   │       ├── read_file.py    # Local file reader
-│   │   │       ├── write_file.py   # Local file writer (requires approval)
-│   │   │       ├── patch_file.py   # Local file patcher
-│   │   │       ├── file_search.py  # File & content search
-│   │   │       ├── list_directory.py # Directory listing
-│   │   │       ├── app_control.py  # Application launcher / window focus
-│   │   │       ├── process_control.py # Process management
-│   │   │       ├── clipboard_control.py # Clipboard inspection / setting
-│   │   │       ├── notify.py       # Windows desktop notifications
-│   │   │       ├── web_search.py   # Web search tool
-│   │   │       ├── fetch_url.py    # URL fetch & markdown extractor
-│   │   │       └── media_control.py# System audio / media control
+│   │   │   └── tools/              # Built-in native tools (read_file, write_file, patch_file, etc.)
 │   │   ├── governor/
 │   │   │   ├── resource_governor.py # PyNVML & psutil telemetry + adaptive queue
 │   │   │   └── process_watcher.py  # Background process monitor & throttle
 │   │   ├── memory/
-│   │   │   ├── manager.py          # SQLite multi-turn conversation manager
-│   │   │   └── compactor.py        # Two-stage progressive context compaction
+│   │   │   ├── store.py            # SQLModel-backed MemoryStore (sessions & messages)
+│   │   │   └── compactor.py        # Progressive context compaction
 │   │   ├── mcp/
 │   │   │   ├── client.py           # JSON-RPC 2.0 stdio client
-│   │   │   ├── manager.py          # MCP server lifecycle & tool bridge
-│   │   │   └── builtin_servers/    # Default internal MCP tools (uptime, disk)
+│   │   │   └── manager.py          # MCP server lifecycle & tool bridge
 │   │   ├── skills/
 │   │   │   └── loader.py           # Dynamic YAML frontmatter markdown loader
 │   │   └── voice/
@@ -83,20 +81,26 @@ JARVIS/
 │   │       └── synthesizer.py      # TTS text cleaner & sanitizer
 │   ├── requirements.txt            # Python dependencies
 │   ├── .env.example                # Configuration template
-│   └── tests/                      # Pytest automated test suite
+│   └── tests/                      # Pytest automated test suite (206+ tests)
 │
-├── desktop/                        # Desktop UI Client
-│   ├── app.py                      # pywebview frameless Spotlight overlay
-│   ├── tray.py                     # pystray Windows system tray service
-│   ├── hotkey.py                   # pynput global keyboard hook (Alt+Space)
-│   └── ui/                         # Glassmorphic HTML/CSS/JS frontend
-│       ├── index.html
-│       ├── styles.css
-│       └── app.js
+├── desktop-app/                    # CANONICAL Desktop UI (Next.js 14 + React + Tailwind + Tauri)
+│   ├── src/
+│   │   ├── app/                    # Next.js app router & main layout
+│   │   ├── components/             # React UI components
+│   │   │   ├── Sidebar.tsx         # Workspace / Project switcher & session history
+│   │   │   ├── RightPanel.tsx      # 4-Tab Panel (Artifacts | Files | Context | Activity)
+│   │   │   ├── Composer.tsx        # Message composer with paperclip file attachment
+│   │   │   ├── ChatView.tsx        # Conversation viewport
+│   │   │   └── GovernorPill.tsx    # Live hardware governor badge
+│   │   ├── hooks/                  # React hooks (useChat, useGovernor)
+│   │   └── lib/                    # API client, SSE streaming client & TypeScript types
+│   ├── package.json
+│   └── out/                        # Static export served by FastAPI backend at /ui
 │
-└── skills/                         # User-defined dynamic skills
-    ├── code_review.md              # Code review domain skill
-    └── system_diagnostics.md       # Diagnostic tools skill
+├── desktop/                        # DEPRECATED legacy UI (pywebview fallback)
+│   └── DEPRECATED.md               # Deprecation documentation
+│
+└── workspace/                      # Active project workspace directories & files
 ```
 
 ---
@@ -105,11 +109,11 @@ JARVIS/
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           DESKTOP CLIENT & TRAY                             │
-│   • Spotlight Overlay (pywebview)        • Windows System Tray (pystray)    │
-│   • Global Hotkeys (Alt+Space / Ctrl+Space) • Voice / Wake-Word ("Jarvis")  │
+│                           DESKTOP CLIENT                                    │
+│   • Next.js / React / Tailwind Frontend (desktop-app/)                      │
+│   • Workspace Switcher | 4-Tab RightPanel | Attachment Composer             │
 └──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │ HTTP JSON-RPC (POST /api/chat)
+                                       │ SSE Streaming (POST /chat/stream)
 ┌──────────────────────────────────────▼──────────────────────────────────────┐
 │                            FASTAPI BACKEND SERVICE                          │
 │                                                                             │
@@ -121,37 +125,41 @@ JARVIS/
 │  ┌────────────▼───────────────────────────▼──────────────────────▼───────┐  │
 │  │                           Agent Orchestrator                          │  │
 │  │   • Multi-Turn Tool Loop                 • Context Compaction         │  │
-│  │   • Dynamic Skills Loader                • MCP Stdio Client Bridge    │  │
+│  │   • Attachment Context Injection         • MCP Stdio Client Bridge    │  │
+│  │   • Dynamic Skills Loader                • Native llama.cpp Provider  │  │
 │  └────────────┬──────────────────────────────────────────────────┬───────┘  │
 │               │                                                  │          │
 │  ┌────────────▼────────────┐                       ┌─────────────▼───────┐  │
-│  │      SQLite Memory      │                       │     Tool Registry   │  │
-│  │  (Sessions & Messages)  │                       │   • read_file       │  │
-│  │                         │                       │   • write_file      │  │
-│  │                         │                       │   • MCP Tools       │  │
+│  │    SQLModel Database    │                       │  llama-server.exe   │  │
+│  │ (Projects, Sessions,    │                       │  (Qwen3.5-9B / 4B)  │  │
+│  │  Attachments, Artifacts)│                       │  -ngl 99 --no-mmap  │  │
 │  └─────────────────────────┘                       └─────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
-
-### End-to-End Workflow:
-1. **Invocation**: User triggers overlay via `Alt+Space` or says `"Hey Jarvis"`.
-2. **API Dispatch**: UI sends `POST /api/chat` with user query and session ID.
-3. **Telemetry Check**: `ResourceGovernor.wait_until_healthy()` verifies hardware safety (<90% VRAM, <85% GPU Core, <90% CPU).
-4. **Model Selection**: `ModelRouter` checks if heavy reasoning is required.
-5. **Context Assembly**: `MemoryManager` fetches history, dynamically injects matched skills from `skills/*.md`, and compacts if over 16,000 tokens.
-6. **Tool Loop & Safety**: `Orchestrator` invokes model. If model requests tool execution, `PermissionManager` validates the operation:
-   - `LOW_RISK` tools run immediately.
-   - `CONFIRMATION_REQUIRED` / `HIGH_RISK` tools pause and issue a SHA-256 action token `act_<hash>`.
-7. **Response & Persistence**: Turns are saved to SQLite and rendered in the UI.
 
 ---
 
 ## 4. Key Developer Commands
 
-- **Run Full App**: `python run_jarvis.py`
-- **Run Backend Standalone**: `python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000 --reload`
-- **Run Test Suite**:
+- **Run Full App**: `python run_jarvis.py` (or `.\Jarvis.bat`)
+- **Run Full App with Legacy UI Fallback**: `python run_jarvis.py --legacy-ui`
+- **Run Backend Standalone**:
   ```powershell
-  $env:PYTHONPATH="d:/JARVIS/backend;d:/JARVIS"
-  pytest backend/tests -v
+  cd d:\JARVIS\backend
+  ..\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+  ```
+- **Run Frontend Dev Server**:
+  ```powershell
+  cd d:\JARVIS\desktop-app
+  npm run dev
+  ```
+- **Build Frontend Static Export**:
+  ```powershell
+  cd d:\JARVIS\desktop-app
+  npm run build
+  ```
+- **Run Backend Pytest Suite**:
+  ```powershell
+  cd d:\JARVIS\backend
+  ..\.venv\Scripts\python.exe -m pytest -o pythonpath=". .." tests/
   ```

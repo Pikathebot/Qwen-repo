@@ -14,14 +14,14 @@ export interface UseChatReturn {
   error: string | null;
   selectedModel: string | null;
   setSelectedModel: (model: string | null) => void;
+  retrievalContext: import("@/lib/types").SSERetrievalContextEvent | null;
+  activitySteps: import("@/lib/types").ActivityStep[];
   sendMessage: (
-
     content: string,
     approvedActionIds?: string[],
     attachments?: import("@/lib/types").Attachment[],
     projectId?: string
   ) => Promise<void>;
-
   confirmAction: (actionId: string) => Promise<void>;
   denyAction: () => void;
   selectSession: (sessionId: string) => Promise<void>;
@@ -36,8 +36,12 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [pendingConfirmations, setPendingConfirmations] = useState<PendingConfirmation[]>([]);
+  const [retrievalContext, setRetrievalContext] = useState<import("@/lib/types").SSERetrievalContextEvent | null>(null);
+  const [activitySteps, setActivitySteps] = useState<import("@/lib/types").ActivityStep[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
+
+
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const lastUserPromptRef = useRef<string>("");
@@ -226,10 +230,55 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
               );
             },
             onConfirmationRequired: ({ pending_confirmations, session_id }) => {
+
               setPendingConfirmations(pending_confirmations);
               if (session_id && session_id !== activeSessionId) {
                 setActiveSessionId(session_id);
               }
+            },
+            onRetrievalContext: (data) => {
+              setRetrievalContext(data);
+            },
+            onToolCall: ({ tool, args, call_id }) => {
+              setActivitySteps((prev) => [
+                ...prev,
+                {
+                  id: call_id || `step_${Date.now()}`,
+                  timestamp: new Date(),
+                  type: "tool_call",
+                  tool,
+                  args,
+                  status: "running",
+                },
+              ]);
+            },
+            onToolResult: ({ tool, status, summary, result, call_id, latency_ms, truncated }) => {
+              setActivitySteps((prev) => [
+                ...prev,
+                {
+                  id: `res_${call_id || Date.now()}`,
+                  timestamp: new Date(),
+                  type: "tool_result",
+                  tool,
+                  status,
+                  summary,
+                  result,
+                  latency_ms,
+                  truncated,
+                },
+              ]);
+            },
+            onAgentStatus: ({ status, tool }) => {
+              setActivitySteps((prev) => [
+                ...prev,
+                {
+                  id: `stat_${Date.now()}`,
+                  timestamp: new Date(),
+                  type: "status",
+                  status,
+                  tool,
+                },
+              ]);
             },
             onDone: ({ response, model, provider, tools_used, active_skills }) => {
               setMessages((prev) =>
@@ -294,6 +343,8 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
     isLoading,
     streamingMessageId,
     pendingConfirmations,
+    retrievalContext,
+    activitySteps,
     error,
     selectedModel,
     setSelectedModel,
@@ -306,3 +357,5 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
     clearError,
   };
 }
+
+
