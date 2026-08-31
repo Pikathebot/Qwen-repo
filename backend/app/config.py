@@ -1,102 +1,151 @@
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+
 class Settings(BaseSettings):
-    # Model Runtime Configuration ("llama_cpp" primary, "ollama" fallback)
-    model_runtime: str = "llama_cpp"
-
-    # Active Model Backend (Stage B: "bonsai" default, "hermes3" rollback target - retained for backward compat)
-    active_model_backend: str = "llama_cpp"
-
-    # llama.cpp Local Configuration (Primary Runtime)
-    llamacpp_server_exe: str = "tools/llama-cpp/llama-server.exe"
-    llamacpp_main_model_path: str = "models/Qwen3.5-9B-Q4_K_M.gguf"
-    llamacpp_fast_model_path: str = "models/Qwen3.5-4B-UD-Q4_K_XL.gguf"
-    llamacpp_host: str = "127.0.0.1"
-    llamacpp_port: int = 8001
-    llamacpp_ctx_size: int = 16384
-    llamacpp_gpu_layers: int = 999
-    llamacpp_extra_args: list[str] = []       # future: TurboQuant -ctk/-ctv, mmproj, etc.
-    llamacpp_startup_timeout_seconds: float = 90.0
-
-    # LM Studio Local Configuration (Deprecated)
-    lmstudio_base_url: str = "http://localhost:1234/v1"
-    lmstudio_model: str = "prism-ml/bonsai-27b"
-    lmstudio_qwen_model: str = "qwen3.8-9b-distill"
-
-    # Local Ollama Configuration (Fallback Runtime)
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_host: str = "http://localhost:11434"
-    ollama_model: str = "hermes3:8b"
-    ollama_main_model: str = "hermes3:8b"     # fallback family ONLY, never Qwen3.5
-    ollama_fast_model: str = "qwen2.5:3b-instruct"
-    
-    # Server Configuration
-    app_host: str = "127.0.0.1"
-    app_port: int = 8000
-
-    # Cloud Routing & Heavy Mode Settings (Disabled)
-    cloud_routing_enabled: bool = False
-    heavy_mode_enabled: bool = False
-    openrouter_enabled: bool = False
-    openrouter_api_key: Optional[str] = None
-    openrouter_heavy_model: str = "meta-llama/llama-3.3-70b-instruct:free"
-    openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    default_routing_mode: str = "auto"  # "auto" | "normal" | "heavy"
-
-    # Resource Governor V2 Settings
-    governor_enabled: bool = True
-    governor_poll_interval: float = 1.0
-    governor_gpu_threshold: float = 88.0
-    governor_vram_threshold: float = 92.0
-    governor_cpu_threshold: float = 95.0
-    governor_ram_threshold: float = 98.5
-    governor_sustained_breach_polls: int = 3
-    governor_recovery_polls: int = 2
-    governor_startup_grace_seconds: float = 20.0
-    governor_queue_timeout_seconds: float = 3.0
-    governor_watchlist_path: str = os.path.join(BASE_DIR.parent, "governor_watchlist.json")
-    governor_process_poll_interval: float = 2.0
-    governor_process_launch_debounce: float = 4.0
-    governor_process_recovery_debounce: float = 3.0
-
-    # Memory & Context Compaction Settings
-    memory_db_path: str = os.path.join(BASE_DIR, "data", "jarvis_memory.db")
-    memory_max_context_tokens: int = 8192  # Compact when exceeding 8k to stay well under 16k context
-    memory_tool_pruning_char_threshold: int = 200
-
-    @property
-    def database_url(self) -> str:
-        db_path = Path(self.memory_db_path).resolve().as_posix()
-        return f"sqlite:///{db_path}"
-
-
-    # Safety & Tool Limits Settings (Stage A)
-    max_tool_calls_per_turn: int = 15
-    confirmation_timeout_action: str = "deny"
-
-    # Tool-Call Reliability & Rollback Settings (Stage B Addendum)
-    reliability_window_size: int = 30
-    reliability_floor: float = 0.75  # 75% floor over rolling window of last 30 tool calls
-
-    # TTS & Voice Output Settings
-    voice_output_enabled: bool = False
-    tts_engine: str = "chatterbox"  # "chatterbox" | "kokoro"
-    tts_vram_required_mb: float = 2500.0
-    tts_kokoro_vram_required_mb: float = 1200.0
-    tts_chunk_size_chars: int = 300
-    tts_device: str = "cuda"
-
     model_config = SettingsConfigDict(
         env_file=os.path.join(BASE_DIR, ".env"),
         env_file_encoding="utf-8",
-        extra="ignore"
+        extra="ignore",
+        populate_by_name=True
     )
+
+    # Engine
+    llama_server_exe: str = Field(default="tools/llama-cpp/llama-server.exe", alias="LLAMA_SERVER_EXE")
+    llama_base_url: str = Field(default="http://localhost:8001/v1", alias="LLAMA_BASE_URL")
+    llama_main_model_path: str = Field(default="models/Qwen3.5-9B-Q4_K_M.gguf", alias="LLAMA_MAIN_MODEL_PATH")
+    llama_fast_model_path: str = Field(default="models/Qwen3.5-4B-Q4_K_M.gguf", alias="LLAMA_FAST_MODEL_PATH")
+    llama_host: str = Field(default="127.0.0.1", alias="LLAMA_HOST")
+    llama_port: int = Field(default=8001, alias="LLAMA_PORT")
+    llama_startup_timeout_seconds: float = Field(default=90.0, alias="LLAMA_STARTUP_TIMEOUT")
+    llama_extra_args: list[str] = Field(default_factory=list, alias="LLAMA_EXTRA_ARGS")
+
+    # Execution Flags (Amendment 1)
+    llama_n_gpu_layers: int = Field(default=99, alias="LLAMA_N_GPU_LAYERS")
+    llama_use_mmap: bool = Field(default=False, alias="LLAMA_USE_MMAP")
+
+    # Context Limits (Amendment 2)
+    llama_ctx_size_main: int = Field(default=16384, alias="LLAMA_CTX_SIZE_MAIN")
+    llama_ctx_size_fast: int = Field(default=8192, alias="LLAMA_CTX_SIZE_FAST")
+
+    # Model Routing (Section 2 of Build plan)
+    main_model: str = Field(default="Qwen3.5-9B-Q4_K_M", alias="MAIN_MODEL")
+    fast_model: str = Field(default="Qwen3.5-4B-Q4_K_M", alias="FAST_MODEL")
+    vision_model: Optional[str] = Field(default=None, alias="VISION_MODEL")
+    embedding_model: str = Field(default="Qwen3-Embedding-0.6B", alias="EMBEDDING_MODEL")
+    reranker_model: str = Field(default="Qwen3-Reranker-0.6B", alias="RERANKER_MODEL")
+
+    # Server & App Configuration
+    app_host: str = Field(default="127.0.0.1", alias="APP_HOST")
+    app_port: int = Field(default=8000, alias="APP_PORT")
+    database_url: str = Field(default="sqlite:///./data/jarvis_memory.db", alias="DATABASE_URL")
+    workspace_path: str = Field(default="./workspace", alias="WORKSPACE_PATH")
+    max_upload_size_mb: int = Field(default=50, alias="MAX_UPLOAD_SIZE_MB")
+    terminal_enabled: bool = Field(default=False, alias="TERMINAL_ENABLED")
+
+    web_search_enabled: bool = Field(default=False, alias="WEB_SEARCH_ENABLED")
+
+    # Cloud Routing & Heavy Mode Settings
+    cloud_routing_enabled: bool = Field(default=False, alias="CLOUD_ROUTING_ENABLED")
+    heavy_mode_enabled: bool = Field(default=False, alias="HEAVY_MODE_ENABLED")
+    openrouter_enabled: bool = Field(default=False, alias="OPENROUTER_ENABLED")
+    openrouter_api_key: Optional[str] = Field(default=None, alias="OPENROUTER_API_KEY")
+    openrouter_heavy_model: str = Field(default="meta-llama/llama-3.3-70b-instruct:free", alias="OPENROUTER_HEAVY_MODEL")
+    openrouter_base_url: str = Field(default="https://openrouter.ai/api/v1", alias="OPENROUTER_BASE_URL")
+    default_routing_mode: str = Field(default="auto", alias="DEFAULT_ROUTING_MODE")
+
+    # Resource Governor V2 Settings
+    governor_enabled: bool = Field(default=True, alias="GOVERNOR_ENABLED")
+    governor_poll_interval: float = Field(default=1.0, alias="GOVERNOR_POLL_INTERVAL")
+    governor_gpu_threshold: float = Field(default=88.0, alias="GOVERNOR_GPU_THRESHOLD")
+    governor_vram_threshold: float = Field(default=92.0, alias="GOVERNOR_VRAM_THRESHOLD")
+    governor_cpu_threshold: float = Field(default=95.0, alias="GOVERNOR_CPU_THRESHOLD")
+    governor_ram_threshold: float = Field(default=98.5, alias="GOVERNOR_RAM_THRESHOLD")
+    governor_sustained_breach_polls: int = Field(default=3, alias="GOVERNOR_SUSTAINED_BREACH_POLLS")
+    governor_recovery_polls: int = Field(default=2, alias="GOVERNOR_RECOVERY_POLLS")
+    governor_startup_grace_seconds: float = Field(default=20.0, alias="GOVERNOR_STARTUP_GRACE_SECONDS")
+    governor_queue_timeout_seconds: float = Field(default=3.0, alias="GOVERNOR_QUEUE_TIMEOUT_SECONDS")
+    governor_watchlist_path: str = Field(default=os.path.join(BASE_DIR.parent, "governor_watchlist.json"), alias="GOVERNOR_WATCHLIST_PATH")
+    governor_process_poll_interval: float = Field(default=2.0, alias="GOVERNOR_PROCESS_POLL_INTERVAL")
+    governor_process_launch_debounce: float = Field(default=4.0, alias="GOVERNOR_PROCESS_LAUNCH_DEBOUNCE")
+    governor_process_recovery_debounce: float = Field(default=3.0, alias="GOVERNOR_PROCESS_RECOVERY_DEBOUNCE")
+
+    # Memory & Context Compaction Settings
+    memory_db_path: str = Field(default=os.path.join(BASE_DIR, "data", "jarvis_memory.db"), alias="MEMORY_DB_PATH")
+    memory_max_context_tokens: int = Field(default=8192, alias="MEMORY_MAX_CONTEXT_TOKENS")
+    memory_tool_pruning_char_threshold: int = Field(default=200, alias="MEMORY_TOOL_PRUNING_CHAR_THRESHOLD")
+
+    # Safety & Tool Limits Settings (Stage A)
+    max_tool_calls_per_turn: int = Field(default=15, alias="MAX_TOOL_CALLS_PER_TURN")
+    confirmation_timeout_action: str = Field(default="deny", alias="CONFIRMATION_TIMEOUT_ACTION")
+
+    # Tool-Call Reliability Settings
+    reliability_window_size: int = Field(default=30, alias="RELIABILITY_WINDOW_SIZE")
+    reliability_floor: float = Field(default=0.75, alias="RELIABILITY_FLOOR")
+
+    # TTS & Voice Output Settings
+    voice_output_enabled: bool = Field(default=False, alias="VOICE_OUTPUT_ENABLED")
+    tts_engine: str = Field(default="chatterbox", alias="TTS_ENGINE")
+    tts_vram_required_mb: float = Field(default=2500.0, alias="TTS_VRAM_REQUIRED_MB")
+    tts_kokoro_vram_required_mb: float = Field(default=1200.0, alias="TTS_KOKORO_VRAM_REQUIRED_MB")
+    tts_chunk_size_chars: int = Field(default=300, alias="TTS_CHUNK_SIZE_CHARS")
+    tts_device: str = Field(default="cuda", alias="TTS_DEVICE")
+
+    # Runtime & Legacy Compatibility
+    model_runtime: str = Field(default="llama_cpp", alias="MODEL_RUNTIME")
+    active_model_backend: str = Field(default="bonsai", alias="ACTIVE_MODEL_BACKEND")
+    lmstudio_base_url: str = Field(default="http://localhost:1234/v1", alias="LMSTUDIO_BASE_URL")
+    lmstudio_model: str = Field(default="prism-ml/bonsai-27b", alias="LMSTUDIO_MODEL")
+    ollama_host: str = Field(default="http://localhost:11434", alias="OLLAMA_HOST")
+    ollama_base_url: str = Field(default="http://localhost:11434", alias="OLLAMA_BASE_URL")
+    ollama_model: str = Field(default="hermes3:8b", alias="OLLAMA_MODEL")
+    ollama_main_model: str = Field(default="hermes3:8b", alias="OLLAMA_MAIN_MODEL")
+
+
+    # Backward compatibility properties
+    @property
+    def llamacpp_server_exe(self) -> str:
+        return self.llama_server_exe
+
+    @property
+    def llamacpp_main_model_path(self) -> str:
+        return self.llama_main_model_path
+
+    @property
+    def llamacpp_fast_model_path(self) -> str:
+        return self.llama_fast_model_path
+
+    @property
+    def llamacpp_host(self) -> str:
+        return self.llama_host
+
+    @property
+    def llamacpp_port(self) -> int:
+        return self.llama_port
+
+    @property
+    def llamacpp_ctx_size(self) -> int:
+        return self.llama_ctx_size_main
+
+    @property
+    def llamacpp_gpu_layers(self) -> int:
+        return self.llama_n_gpu_layers
+
+    @property
+    def llamacpp_extra_args(self) -> list[str]:
+        return self.llama_extra_args
+
+    @property
+    def llamacpp_startup_timeout_seconds(self) -> float:
+        return self.llama_startup_timeout_seconds
+
+
+
 
 settings = Settings()
 MAX_TOOL_CALLS_PER_TURN: int = settings.max_tool_calls_per_turn
-

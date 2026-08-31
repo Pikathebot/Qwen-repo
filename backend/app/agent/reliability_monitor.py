@@ -97,18 +97,15 @@ class ReliabilityMonitor:
             ]
 
             # 1. Log alert-level event with loud warning
-            logger.warning(
+            alert_msg = (
                 "CRITICAL ALERT: Tool-call reliability rate dropped below floor! "
-                "Current Rate: %.2f%% (Floor: %.2f%%, Window: %d, Samples: %d, Timestamp: %.3f). "
+                f"Current Rate: {stats['reliability_rate'] * 100.0:.2f}% (Floor: {self.floor * 100.0:.2f}%, Window: {self.window_size}, Samples: {stats['total_samples']}, Timestamp: {now:.3f}). "
                 "Triggering automatic rollback from 'bonsai' to 'hermes3'. "
-                "Failed calls causing breach: %s",
-                stats["reliability_rate"] * 100.0,
-                self.floor * 100.0,
-                self.window_size,
-                stats["total_samples"],
-                now,
-                failed_summary
+                f"Failed calls causing breach: {failed_summary}"
             )
+            logger.warning(alert_msg)
+            logging.getLogger().warning(alert_msg)
+
 
             # 2. Automatically flip active_model_backend config flag from 'bonsai' to 'hermes3'
             settings.active_model_backend = "hermes3"

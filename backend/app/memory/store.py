@@ -1,9 +1,8 @@
 import json
 import logging
-import os
-import sqlite3
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
+from sqlmodel import Session, select, col
 
 from app.database.models import (
     Project,
@@ -25,208 +24,197 @@ logger = logging.getLogger("jarvis.memory.store")
 
 class MemoryStore:
     """
-    SQLite-backed short-term conversation memory and compaction event store.
+    SQLModel-backed short-term conversation memory and compaction event store.
+    Uses unified database session factory managed by Alembic migrations.
     """
 
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-        self._ensure_dir()
-        self._init_db()
+    def __init__(
+        self,
+        session_factory: Optional[Callable[[], Session]] = None,
+        db_path: Optional[str] = None
+    ):
+        if session_factory is not None:
+            self._session_factory = session_factory
+        elif db_path is not None:
+            # Isolated engine creation for standalone tests specifying a temp db path
+            from pathlib import Path
+            from sqlalchemy.orm import sessionmaker
+            from sqlmodel import SQLModel, create_engine
+            clean_path = Path(db_path).resolve().as_posix()
+            eng = create_engine(
+                f"sqlite:///{clean_path}",
+                connect_args={"check_same_thread": False},
+                pool_pre_ping=True
+            )
+            SQLModel.metadata.create_all(eng)
+            self._session_factory = sessionmaker(
+                autocommit=False,
+                autoflush=False,
+                bind=eng,
+                class_=Session
+            )
+        else:
+            from app.database.session import SessionLocal
+            self._session_factory = SessionLocal
 
-    def _ensure_dir(self) -> None:
-        db_dir = os.path.dirname(self.db_path)
-        if db_dir:
-            os.makedirs(db_dir, exist_ok=True)
-
-    def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def _init_db(self) -> None:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Sessions table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS sessions (
-                    session_id TEXT PRIMARY KEY,
-                    title TEXT,
-                    chat_mode TEXT DEFAULT 'WORKSPACE',
-                    created_at REAL,
-                    updated_at REAL
-                )
-            """)
-            try:
-                cursor.execute("ALTER TABLE sessions ADD COLUMN chat_mode TEXT DEFAULT 'WORKSPACE'")
-            except sqlite3.OperationalError:
-                pass
-
-
-            # Messages table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT,
-                    name TEXT,
-                    tool_calls_json TEXT,
-                    token_estimate INTEGER DEFAULT 0,
-                    is_summary INTEGER DEFAULT 0,
-                    created_at REAL,
-                    FOREIGN KEY (session_id) REFERENCES sessions (session_id) ON DELETE CASCADE
-                )
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_messages_session ON messages (session_id, id)
-            """)
-
-            # Compaction events audit table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS compaction_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    strategy TEXT NOT NULL,
-                    tokens_before INTEGER NOT NULL,
-                    tokens_after INTEGER NOT NULL,
-                    details TEXT,
-                    created_at REAL,
-                    FOREIGN KEY (session_id) REFERENCES sessions (session_id) ON DELETE CASCADE
-                )
-            """)
-
-            # Tool call audit table (Stage A & B)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS tool_call_audit (
-                    call_id TEXT PRIMARY KEY,
-                    turn_id TEXT NOT NULL,
-                    timestamp REAL NOT NULL,
-                    tool_name TEXT NOT NULL,
-                    args_json TEXT NOT NULL,
-                    model_tier TEXT NOT NULL,
-                    validation_result TEXT NOT NULL,
-                    permission_result TEXT NOT NULL,
-                    executed INTEGER NOT NULL,
-                    error TEXT,
-                    repair_attempt INTEGER NOT NULL DEFAULT 0
-                )
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_tool_audit_turn ON tool_call_audit (turn_id, timestamp)
-            """)
-            cursor.execute("PRAGMA table_info(tool_call_audit)")
-            existing_cols = [col[1] for col in cursor.fetchall()]
-            if existing_cols and "repair_attempt" not in existing_cols:
-                cursor.execute("ALTER TABLE tool_call_audit ADD COLUMN repair_attempt INTEGER NOT NULL DEFAULT 0")
-
-            # Reliability & Rollback events audit table (Stage B Addendum)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS reliability_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp REAL NOT NULL,
-                    event_type TEXT NOT NULL,
-                    backend_from TEXT NOT NULL,
-                    backend_to TEXT NOT NULL,
-                    reliability_rate REAL NOT NULL,
-                    window_size INTEGER NOT NULL,
-                    failed_calls_count INTEGER NOT NULL,
-                    failed_calls_json TEXT NOT NULL,
-                    details TEXT
-                )
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_rel_events_ts ON reliability_events (timestamp DESC)
-            """)
-            conn.commit()
-
+    def _get_session(self) -> Session:
+        """Create and return a new session from the injected session factory."""
+        return self._session_factory()
 
     def get_or_create_session(
         self,
         session_id: str,
         title: Optional[str] = None,
-        chat_mode: Optional[str] = "WORKSPACE"
+        chat_mode: Optional[str] = "WORKSPACE",
+        project_id: Optional[str] = None,
     ) -> dict[str, Any]:
         now = time.time()
         mode_val = (chat_mode or "WORKSPACE").upper()
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,))
-            row = cursor.fetchone()
-            if row:
-                session_dict = dict(row)
-                if chat_mode and session_dict.get("chat_mode") != mode_val:
-                    cursor.execute("UPDATE sessions SET chat_mode = ?, updated_at = ? WHERE session_id = ?", (mode_val, now, session_id))
-                    conn.commit()
-                    session_dict["chat_mode"] = mode_val
-                return session_dict
+        with self._get_session() as session:
+            try:
+                sess = session.get(DBSession, session_id)
+                if sess:
+                    modified = False
+                    if chat_mode and sess.chat_mode != mode_val:
+                        sess.chat_mode = mode_val
+                        modified = True
+                    if project_id is not None and sess.project_id != project_id:
+                        sess.project_id = project_id
+                        modified = True
+                    if modified:
+                        sess.updated_at = now
+                        session.add(sess)
+                        session.commit()
+                    return {
+                        "session_id": sess.session_id,
+                        "project_id": sess.project_id,
+                        "title": sess.title,
+                        "chat_mode": sess.chat_mode,
+                        "created_at": sess.created_at,
+                        "updated_at": sess.updated_at
+                    }
 
-            default_title = title or f"Session {session_id[:8]}"
-            cursor.execute("""
-                INSERT INTO sessions (session_id, title, chat_mode, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-            """, (session_id, default_title, mode_val, now, now))
-            conn.commit()
-            return {
-                "session_id": session_id,
-                "title": default_title,
-                "chat_mode": mode_val,
-                "created_at": now,
-                "updated_at": now
-            }
+                default_title = title or f"Session {session_id[:8]}"
+                sess = DBSession(
+                    session_id=session_id,
+                    project_id=project_id,
+                    title=default_title,
+                    chat_mode=mode_val,
+                    created_at=now,
+                    updated_at=now
+                )
+                session.add(sess)
+                session.commit()
+                return {
+                    "session_id": session_id,
+                    "project_id": project_id,
+                    "title": default_title,
+                    "chat_mode": mode_val,
+                    "created_at": now,
+                    "updated_at": now
+                }
+            except Exception:
+                session.rollback()
+                raise
 
     def set_session_chat_mode(self, session_id: str, chat_mode: str) -> None:
         mode_val = (chat_mode or "WORKSPACE").upper()
         now = time.time()
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("UPDATE sessions SET chat_mode = ?, updated_at = ? WHERE session_id = ?", (mode_val, now, session_id))
-            conn.commit()
+        with self._get_session() as session:
+            try:
+                sess = session.get(DBSession, session_id)
+                if sess:
+                    sess.chat_mode = mode_val
+                    sess.updated_at = now
+                    session.add(sess)
+                    session.commit()
+            except Exception:
+                session.rollback()
+                raise
 
+    def list_sessions(self, project_id: Optional[str] = None) -> list[dict[str, Any]]:
+        with self._get_session() as session:
+            try:
+                statement = select(DBSession)
+                if project_id is not None:
+                    statement = statement.where(DBSession.project_id == project_id)
+                statement = statement.order_by(col(DBSession.updated_at).desc())
+                sessions = session.exec(statement).all()
+                return [
+                    {
+                        "session_id": s.session_id,
+                        "project_id": s.project_id,
+                        "title": s.title,
+                        "chat_mode": s.chat_mode,
+                        "created_at": s.created_at,
+                        "updated_at": s.updated_at,
+                    }
+                    for s in sessions
+                ]
+            except Exception:
+                session.rollback()
+                raise
 
-    def list_sessions(self) -> list[dict[str, Any]]:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM sessions ORDER BY updated_at DESC")
-            return [dict(row) for row in cursor.fetchall()]
 
     def delete_session(self, session_id: str) -> bool:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-            cursor.execute("DELETE FROM compaction_events WHERE session_id = ?", (session_id,))
-            cursor.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-            conn.commit()
-            return cursor.rowcount > 0
+        with self._get_session() as session:
+            try:
+                # Delete associated messages
+                messages = session.exec(
+                    select(Message).where(Message.session_id == session_id)
+                ).all()
+                for msg in messages:
+                    session.delete(msg)
+
+                # Delete associated compaction events
+                events = session.exec(
+                    select(CompactionEvent).where(CompactionEvent.session_id == session_id)
+                ).all()
+                for ev in events:
+                    session.delete(ev)
+
+                # Delete session record
+                sess = session.get(DBSession, session_id)
+                if sess:
+                    session.delete(sess)
+                    session.commit()
+                    return True
+                session.commit()
+                return False
+            except Exception:
+                session.rollback()
+                raise
 
     def get_messages(self, session_id: str) -> list[dict[str, Any]]:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT role, content, name, tool_calls_json, is_summary
-                FROM messages
-                WHERE session_id = ?
-                ORDER BY id ASC
-            """, (session_id,))
-            rows = cursor.fetchall()
-            
-            messages = []
-            for row in rows:
-                msg: dict[str, Any] = {
-                    "role": row["role"],
-                    "content": row["content"] or ""
-                }
-                if row["name"]:
-                    msg["name"] = row["name"]
-                if row["tool_calls_json"]:
-                    try:
-                        msg["tool_calls"] = json.loads(row["tool_calls_json"])
-                    except Exception:
-                        pass
-                if row["is_summary"]:
-                    msg["is_summary"] = bool(row["is_summary"])
-                messages.append(msg)
-            return messages
+        with self._get_session() as session:
+            try:
+                statement = (
+                    select(Message)
+                    .where(Message.session_id == session_id)
+                    .order_by(col(Message.id).asc())
+                )
+                rows = session.exec(statement).all()
+
+                messages = []
+                for row in rows:
+                    msg: dict[str, Any] = {
+                        "role": row.role,
+                        "content": row.content or ""
+                    }
+                    if row.name:
+                        msg["name"] = row.name
+                    if row.tool_calls_json:
+                        try:
+                            msg["tool_calls"] = json.loads(row.tool_calls_json)
+                        except Exception:
+                            pass
+                    if row.is_summary:
+                        msg["is_summary"] = bool(row.is_summary)
+                    messages.append(msg)
+                return messages
+            except Exception:
+                session.rollback()
+                raise
 
     def append_message(
         self,
@@ -242,44 +230,73 @@ class MemoryStore:
         tool_calls_str = json.dumps(tool_calls) if tool_calls else None
         token_estimate = max(1, len(content or "") // 4)
 
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO messages (session_id, role, content, name, tool_calls_json, token_estimate, is_summary, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (session_id, role, content, name, tool_calls_str, token_estimate, 1 if is_summary else 0, now))
-            
-            cursor.execute("""
-                UPDATE sessions SET updated_at = ? WHERE session_id = ?
-            """, (now, session_id))
-            conn.commit()
+        with self._get_session() as session:
+            try:
+                msg = Message(
+                    session_id=session_id,
+                    role=role,
+                    content=content,
+                    name=name,
+                    tool_calls_json=tool_calls_str,
+                    token_estimate=token_estimate,
+                    is_summary=1 if is_summary else 0,
+                    created_at=now
+                )
+                session.add(msg)
+
+                sess = session.get(DBSession, session_id)
+                if sess:
+                    sess.updated_at = now
+                    session.add(sess)
+
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
 
     def replace_messages(self, session_id: str, messages: list[dict[str, Any]]) -> None:
         """
         Replace all stored messages for a session (used after compaction).
         """
         now = time.time()
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-            for msg in messages:
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                name = msg.get("name")
-                tool_calls = msg.get("tool_calls")
-                tool_calls_str = json.dumps(tool_calls) if tool_calls else None
-                is_summary = 1 if msg.get("is_summary") else 0
-                token_est = max(1, len(content) // 4)
-                
-                cursor.execute("""
-                    INSERT INTO messages (session_id, role, content, name, tool_calls_json, token_estimate, is_summary, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (session_id, role, content, name, tool_calls_str, token_est, is_summary, now))
-            
-            cursor.execute("""
-                UPDATE sessions SET updated_at = ? WHERE session_id = ?
-            """, (now, session_id))
-            conn.commit()
+        with self._get_session() as session:
+            try:
+                old_messages = session.exec(
+                    select(Message).where(Message.session_id == session_id)
+                ).all()
+                for m in old_messages:
+                    session.delete(m)
+
+                for msg in messages:
+                    role = msg.get("role", "user")
+                    content = msg.get("content", "")
+                    name = msg.get("name")
+                    tool_calls = msg.get("tool_calls")
+                    tool_calls_str = json.dumps(tool_calls) if tool_calls else None
+                    is_summary = 1 if msg.get("is_summary") else 0
+                    token_est = max(1, len(content) // 4)
+
+                    new_msg = Message(
+                        session_id=session_id,
+                        role=role,
+                        content=content,
+                        name=name,
+                        tool_calls_json=tool_calls_str,
+                        token_estimate=token_est,
+                        is_summary=is_summary,
+                        created_at=now
+                    )
+                    session.add(new_msg)
+
+                sess = session.get(DBSession, session_id)
+                if sess:
+                    sess.updated_at = now
+                    session.add(sess)
+
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
 
     def record_compaction(
         self,
@@ -290,29 +307,54 @@ class MemoryStore:
         details: Optional[str] = None
     ) -> dict[str, Any]:
         now = time.time()
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO compaction_events (session_id, strategy, tokens_before, tokens_after, details, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (session_id, strategy, tokens_before, tokens_after, details, now))
-            conn.commit()
-            return {
-                "session_id": session_id,
-                "strategy": strategy,
-                "tokens_before": tokens_before,
-                "tokens_after": tokens_after,
-                "details": details,
-                "timestamp": now
-            }
+        with self._get_session() as session:
+            try:
+                ev = CompactionEvent(
+                    session_id=session_id,
+                    strategy=strategy,
+                    tokens_before=tokens_before,
+                    tokens_after=tokens_after,
+                    details=details,
+                    created_at=now
+                )
+                session.add(ev)
+                session.commit()
+                return {
+                    "session_id": session_id,
+                    "strategy": strategy,
+                    "tokens_before": tokens_before,
+                    "tokens_after": tokens_after,
+                    "details": details,
+                    "timestamp": now
+                }
+            except Exception:
+                session.rollback()
+                raise
 
     def get_compaction_events(self, session_id: str) -> list[dict[str, Any]]:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM compaction_events WHERE session_id = ? ORDER BY id ASC
-            """, (session_id,))
-            return [dict(row) for row in cursor.fetchall()]
+        with self._get_session() as session:
+            try:
+                statement = (
+                    select(CompactionEvent)
+                    .where(CompactionEvent.session_id == session_id)
+                    .order_by(col(CompactionEvent.id).asc())
+                )
+                events = session.exec(statement).all()
+                return [
+                    {
+                        "id": e.id,
+                        "session_id": e.session_id,
+                        "strategy": e.strategy,
+                        "tokens_before": e.tokens_before,
+                        "tokens_after": e.tokens_after,
+                        "details": e.details,
+                        "created_at": e.created_at
+                    }
+                    for e in events
+                ]
+            except Exception:
+                session.rollback()
+                raise
 
     def record_tool_call_audit(
         self,
@@ -330,67 +372,108 @@ class MemoryStore:
     ) -> dict[str, Any]:
         now = timestamp if timestamp is not None else time.time()
         args_json = json.dumps(args, sort_keys=True) if isinstance(args, dict) else str(args)
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT OR REPLACE INTO tool_call_audit (
-                    call_id, turn_id, timestamp, tool_name, args_json,
-                    model_tier, validation_result, permission_result, executed, error, repair_attempt
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                call_id, turn_id, now, tool_name, args_json,
-                model_tier, validation_result, permission_result, 1 if executed else 0, error, repair_attempt
-            ))
-            conn.commit()
-            return {
-                "call_id": call_id,
-                "turn_id": turn_id,
-                "timestamp": now,
-                "tool_name": tool_name,
-                "args_json": args_json,
-                "model_tier": model_tier,
-                "validation_result": validation_result,
-                "permission_result": permission_result,
-                "executed": executed,
-                "error": error,
-                "repair_attempt": repair_attempt,
-            }
+        with self._get_session() as session:
+            try:
+                audit = session.get(ToolCallAudit, call_id)
+                if not audit:
+                    audit = ToolCallAudit(
+                        call_id=call_id,
+                        turn_id=turn_id,
+                        timestamp=now,
+                        tool_name=tool_name,
+                        args_json=args_json,
+                        model_tier=model_tier,
+                        validation_result=validation_result,
+                        permission_result=permission_result,
+                        executed=1 if executed else 0,
+                        error=error,
+                        repair_attempt=repair_attempt
+                    )
+                else:
+                    audit.turn_id = turn_id
+                    audit.timestamp = now
+                    audit.tool_name = tool_name
+                    audit.args_json = args_json
+                    audit.model_tier = model_tier
+                    audit.validation_result = validation_result
+                    audit.permission_result = permission_result
+                    audit.executed = 1 if executed else 0
+                    audit.error = error
+                    audit.repair_attempt = repair_attempt
+
+                session.add(audit)
+                session.commit()
+                return {
+                    "call_id": call_id,
+                    "turn_id": turn_id,
+                    "timestamp": now,
+                    "tool_name": tool_name,
+                    "args_json": args_json,
+                    "model_tier": model_tier,
+                    "validation_result": validation_result,
+                    "permission_result": permission_result,
+                    "executed": executed,
+                    "error": error,
+                    "repair_attempt": repair_attempt,
+                }
+            except Exception:
+                session.rollback()
+                raise
 
     def get_tool_call_audits(
         self,
         turn_id: Optional[str] = None,
         limit: int = 100
     ) -> list[dict[str, Any]]:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            if turn_id:
-                cursor.execute("""
-                    SELECT * FROM tool_call_audit
-                    WHERE turn_id = ?
-                    ORDER BY timestamp ASC
-                    LIMIT ?
-                """, (turn_id, limit))
-            else:
-                cursor.execute("""
-                    SELECT * FROM tool_call_audit
-                    ORDER BY timestamp DESC
-                    LIMIT ?
-                """, (limit,))
-            rows = cursor.fetchall()
-            return [dict(row) for row in rows]
+        with self._get_session() as session:
+            try:
+                statement = select(ToolCallAudit)
+                if turn_id:
+                    statement = (
+                        statement.where(ToolCallAudit.turn_id == turn_id)
+                        .order_by(col(ToolCallAudit.timestamp).asc())
+                        .limit(limit)
+                    )
+                else:
+                    statement = (
+                        statement.order_by(col(ToolCallAudit.timestamp).desc())
+                        .limit(limit)
+                    )
+                rows = session.exec(statement).all()
+                return [
+                    {
+                        "call_id": r.call_id,
+                        "turn_id": r.turn_id,
+                        "timestamp": r.timestamp,
+                        "tool_name": r.tool_name,
+                        "args_json": r.args_json,
+                        "model_tier": r.model_tier,
+                        "validation_result": r.validation_result,
+                        "permission_result": r.permission_result,
+                        "executed": r.executed,
+                        "error": r.error,
+                        "repair_attempt": r.repair_attempt
+                    }
+                    for r in rows
+                ]
+            except Exception:
+                session.rollback()
+                raise
 
     def get_tool_call_stats(self, model_tier: Optional[str] = None) -> dict[str, Any]:
         """
         Compute empirical tool-calling reliability metrics:
         First-attempt valid rate, repaired valid rate, and escalation rate.
         """
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            if model_tier:
-                cursor.execute("SELECT validation_result, repair_attempt, executed FROM tool_call_audit WHERE model_tier = ?", (model_tier,))
-            else:
-                cursor.execute("SELECT validation_result, repair_attempt, executed FROM tool_call_audit")
-            rows = cursor.fetchall()
+        with self._get_session() as session:
+            try:
+                statement = select(ToolCallAudit)
+                if model_tier:
+                    statement = statement.where(ToolCallAudit.model_tier == model_tier)
+                rows = session.exec(statement).all()
+            except Exception:
+                session.rollback()
+                raise
 
         total = len(rows)
         if total == 0:
@@ -405,10 +488,14 @@ class MemoryStore:
                 "executed_count": 0,
             }
 
-        first_attempt_valid = sum(1 for r in rows if r["validation_result"] == "valid" and r["repair_attempt"] == 0)
-        repaired_valid = sum(1 for r in rows if r["validation_result"] == "valid" and r["repair_attempt"] > 0)
-        escalated = sum(1 for r in rows if r["validation_result"] == "invalid_escalated")
-        executed = sum(1 for r in rows if r["executed"] == 1)
+        first_attempt_valid = sum(
+            1 for r in rows if r.validation_result == "valid" and (r.repair_attempt or 0) == 0
+        )
+        repaired_valid = sum(
+            1 for r in rows if r.validation_result == "valid" and (r.repair_attempt or 0) > 0
+        )
+        escalated = sum(1 for r in rows if r.validation_result == "invalid_escalated")
+        executed = sum(1 for r in rows if r.executed == 1)
 
         return {
             "total_calls": total,
@@ -431,33 +518,21 @@ class MemoryStore:
         """
         Calculates tool-call reliability over a rolling window of the most recent tool calls.
         Formula: (first-attempt clean calls + auto-repaired calls) / total tool calls.
-        A call counts as success if valid on first attempt OR auto-repaired.
-        A call counts as failure if attempted, failed, and could not be repaired.
-        Cold-start guard: returns cold_start=True if total_samples < window_size.
         """
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            conditions = ["validation_result != 'invalid_repaired'"]
-            params = []
-            if model_tier:
-                conditions.append("model_tier = ?")
-                params.append(model_tier)
-            if since_timestamp is not None:
-                conditions.append("timestamp >= ?")
-                params.append(since_timestamp)
-            
-            where_clause = " AND ".join(conditions)
-            params.append(window_size)
-            query = f"""
-                SELECT call_id, turn_id, timestamp, tool_name, args_json,
-                       model_tier, validation_result, permission_result, executed, error, repair_attempt
-                FROM tool_call_audit
-                WHERE {where_clause}
-                ORDER BY timestamp DESC
-                LIMIT ?
-            """
-            cursor.execute(query, tuple(params))
-            rows = [dict(r) for r in cursor.fetchall()]
+        with self._get_session() as session:
+            try:
+                statement = select(ToolCallAudit).where(
+                    ToolCallAudit.validation_result != "invalid_repaired"
+                )
+                if model_tier:
+                    statement = statement.where(ToolCallAudit.model_tier == model_tier)
+                if since_timestamp is not None:
+                    statement = statement.where(col(ToolCallAudit.timestamp) >= since_timestamp)
+                statement = statement.order_by(col(ToolCallAudit.timestamp).desc()).limit(window_size)
+                rows = session.exec(statement).all()
+            except Exception:
+                session.rollback()
+                raise
 
         total_samples = len(rows)
         if total_samples == 0:
@@ -476,14 +551,50 @@ class MemoryStore:
                 "recent_calls": []
             }
 
-        clean_success = sum(1 for r in rows if r["validation_result"] == "valid" and r.get("repair_attempt", 0) == 0)
-        repaired_success = sum(1 for r in rows if r["validation_result"] == "valid" and r.get("repair_attempt", 0) > 0)
+        clean_success = sum(
+            1 for r in rows if r.validation_result == "valid" and (r.repair_attempt or 0) == 0
+        )
+        repaired_success = sum(
+            1 for r in rows if r.validation_result == "valid" and (r.repair_attempt or 0) > 0
+        )
         success_count = clean_success + repaired_success
-        failed_calls = [r for r in rows if r["validation_result"] != "valid"]
+        failed_calls = [
+            {
+                "call_id": r.call_id,
+                "turn_id": r.turn_id,
+                "timestamp": r.timestamp,
+                "tool_name": r.tool_name,
+                "args_json": r.args_json,
+                "model_tier": r.model_tier,
+                "validation_result": r.validation_result,
+                "permission_result": r.permission_result,
+                "executed": r.executed,
+                "error": r.error,
+                "repair_attempt": r.repair_attempt
+            }
+            for r in rows if r.validation_result != "valid"
+        ]
         failure_count = len(failed_calls)
         reliability_rate = round(success_count / total_samples, 4)
         cold_start = total_samples < window_size
         floor_breached = (not cold_start) and (reliability_rate < floor)
+
+        recent_calls = [
+            {
+                "call_id": r.call_id,
+                "turn_id": r.turn_id,
+                "timestamp": r.timestamp,
+                "tool_name": r.tool_name,
+                "args_json": r.args_json,
+                "model_tier": r.model_tier,
+                "validation_result": r.validation_result,
+                "permission_result": r.permission_result,
+                "executed": r.executed,
+                "error": r.error,
+                "repair_attempt": r.repair_attempt
+            }
+            for r in rows
+        ]
 
         return {
             "total_samples": total_samples,
@@ -497,7 +608,7 @@ class MemoryStore:
             "floor": floor,
             "floor_breached": floor_breached,
             "failed_calls": failed_calls,
-            "recent_calls": rows
+            "recent_calls": recent_calls
         }
 
     def record_reliability_event(
@@ -514,52 +625,70 @@ class MemoryStore:
         """Record an alert or rollback event in the reliability audit history."""
         now = timestamp if timestamp is not None else time.time()
         failed_json = json.dumps(failed_calls)
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO reliability_events (
-                    timestamp, event_type, backend_from, backend_to,
-                    reliability_rate, window_size, failed_calls_count,
-                    failed_calls_json, details
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                now, event_type, backend_from, backend_to,
-                reliability_rate, window_size, len(failed_calls),
-                failed_json, details
-            ))
-            event_id = cursor.lastrowid
-            conn.commit()
-            return {
-                "id": event_id,
-                "timestamp": now,
-                "event_type": event_type,
-                "backend_from": backend_from,
-                "backend_to": backend_to,
-                "reliability_rate": reliability_rate,
-                "window_size": window_size,
-                "failed_calls_count": len(failed_calls),
-                "failed_calls": failed_calls,
-                "details": details
-            }
+        with self._get_session() as session:
+            try:
+                ev = ReliabilityEvent(
+                    timestamp=now,
+                    event_type=event_type,
+                    backend_from=backend_from,
+                    backend_to=backend_to,
+                    reliability_rate=reliability_rate,
+                    window_size=window_size,
+                    failed_calls_count=len(failed_calls),
+                    failed_calls_json=failed_json,
+                    details=details
+                )
+                session.add(ev)
+                session.commit()
+                session.refresh(ev)
+                return {
+                    "id": ev.id,
+                    "timestamp": now,
+                    "event_type": event_type,
+                    "backend_from": backend_from,
+                    "backend_to": backend_to,
+                    "reliability_rate": reliability_rate,
+                    "window_size": window_size,
+                    "failed_calls_count": len(failed_calls),
+                    "failed_calls": failed_calls,
+                    "details": details
+                }
+            except Exception:
+                session.rollback()
+                raise
 
     def get_reliability_events(self, limit: int = 50) -> list[dict[str, Any]]:
         """Retrieve recent reliability and rollback events."""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM reliability_events
-                ORDER BY timestamp DESC
-                LIMIT ?
-            """, (limit,))
-            rows = cursor.fetchall()
-            events = []
-            for r in rows:
-                ev = dict(r)
-                if ev.get("failed_calls_json"):
-                    try:
-                        ev["failed_calls"] = json.loads(ev["failed_calls_json"])
-                    except Exception:
+        with self._get_session() as session:
+            try:
+                statement = (
+                    select(ReliabilityEvent)
+                    .order_by(col(ReliabilityEvent.timestamp).desc())
+                    .limit(limit)
+                )
+                rows = session.exec(statement).all()
+                events = []
+                for r in rows:
+                    ev = {
+                        "id": r.id,
+                        "timestamp": r.timestamp,
+                        "event_type": r.event_type,
+                        "backend_from": r.backend_from,
+                        "backend_to": r.backend_to,
+                        "reliability_rate": r.reliability_rate,
+                        "window_size": r.window_size,
+                        "failed_calls_count": r.failed_calls_count,
+                        "details": r.details
+                    }
+                    if r.failed_calls_json:
+                        try:
+                            ev["failed_calls"] = json.loads(r.failed_calls_json)
+                        except Exception:
+                            ev["failed_calls"] = []
+                    else:
                         ev["failed_calls"] = []
-                events.append(ev)
-            return events
-
+                    events.append(ev)
+                return events
+            except Exception:
+                session.rollback()
+                raise

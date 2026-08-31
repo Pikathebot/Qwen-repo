@@ -328,7 +328,95 @@ class AgentOrchestrator:
             base_url=settings.openrouter_base_url
         )
 
+    def _build_attachment_prompt(
+        self,
+        session_id: str,
+        project_id: Optional[str] = None,
+        direct_attachments: Optional[list[dict[str, Any]]] = None
+    ) -> str:
+        """
+        Gathers attachments associated with the current session/project or passed directly,
+        reads local text/code contents, and formats them into a context injection block for the LLM.
+        """
+        import os
+        from pathlib import Path
+        from sqlmodel import select
+        from app.database import SessionLocal
+        from app.database.models import Attachment
+
+        attachments_to_process: list[dict[str, Any]] = []
+        if direct_attachments:
+            attachments_to_process.extend(direct_attachments)
+
+        try:
+            session_factory = getattr(self.memory_store, "_session_factory", SessionLocal)
+            with session_factory() as session:
+                stmt = select(Attachment).where(Attachment.session_id == session_id)
+
+                if project_id:
+                    stmt = stmt.where(Attachment.project_id == project_id)
+                db_attachments = session.exec(stmt).all()
+                for a in db_attachments:
+                    if not any(d.get("id") == a.id or d.get("path") == a.path for d in attachments_to_process):
+                        attachments_to_process.append({
+                            "id": a.id,
+                            "filename": a.filename,
+                            "path": a.path,
+                            "size_bytes": a.size_bytes,
+                            "content_type": a.content_type
+                        })
+        except Exception as e:
+            logger.warning("Error fetching attachments from database: %s", e)
+
+        if not attachments_to_process:
+            return ""
+
+        sections = ["\n\n[USER ATTACHED FILES IN THIS CONVERSATION]"]
+        text_exts = {
+            ".txt", ".md", ".py", ".js", ".ts", ".tsx", ".json", ".yaml", ".yml",
+            ".cpp", ".h", ".hpp", ".cs", ".ini", ".csv", ".html", ".css", ".svg"
+        }
+
+        for att in attachments_to_process:
+            fname = att.get("filename") or "attached_file"
+            fpath = att.get("path") or ""
+            size = att.get("size_bytes", 0)
+
+            p = Path(fpath)
+            if not p.exists() and fpath:
+                ws_cand = Path(settings.workspace_path).resolve() / fpath
+                if ws_cand.exists():
+                    p = ws_cand
+
+            content_text = ""
+            ext = os.path.splitext(fname)[1].lower()
+
+            if p.exists() and p.is_file() and ext in text_exts and size <= 100 * 1024:
+                try:
+                    with open(p, "r", encoding="utf-8", errors="replace") as f:
+                        raw = f.read(16000)
+                        if len(raw) == 16000:
+                            raw += "\n... [Content truncated at 16KB]"
+                        content_text = raw
+                except Exception as e:
+                    content_text = f"[Could not read content: {e}]"
+
+            if content_text:
+                sections.append(
+                    f"--- File: {fname} (Saved to disk at: {p.as_posix()}) ---\n"
+                    f"```{ext.lstrip('.') or 'text'}\n{content_text}\n```"
+                )
+            else:
+                sections.append(
+                    f"--- File: {fname} (Saved to disk at: {p.as_posix() if p.exists() else fpath}, Size: {size} bytes) ---\n"
+                    f"[Binary/Non-text or large file. Use 'read_file(file_path=\"{p.as_posix() if p.exists() else fpath}\")' to inspect or read this file.]"
+                )
+
+        sections.append("--------------------------------------------------\n")
+        return "\n".join(sections)
+
     def _synthesize_voice(self, text: str):
+
         """Synthesize and play voice output if voice is enabled and TTS engine is available."""
         if not self.voice_output_enabled or not text or not self.tts_engine:
             return
@@ -352,13 +440,15 @@ class AgentOrchestrator:
         self,
         user_message: str,
         session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
         requested_mode: Optional[str] = None,
         requested_model: Optional[str] = None,
         system_prompt: Optional[str] = None,
         approved_action_ids: Optional[list[str]] = None,
         max_iterations: int = 5,
         compaction_threshold_override: Optional[int] = None,
-        chat_mode: Optional[str] = "WORKSPACE"
+        chat_mode: Optional[str] = "WORKSPACE",
+        attachments: Optional[list[dict[str, Any]]] = None
     ) -> OrchestratorResult:
         stop_playback()
         active_session_id = session_id or "default"
@@ -394,13 +484,15 @@ class AgentOrchestrator:
         res = await self._run_internal(
             user_message=user_message,
             session_id=session_id,
+            project_id=project_id,
             requested_mode=requested_mode,
             requested_model=requested_model,
             system_prompt=system_prompt,
             approved_action_ids=approved_action_ids,
             max_iterations=max_iterations,
             compaction_threshold_override=compaction_threshold_override,
-            chat_mode=chat_mode
+            chat_mode=chat_mode,
+            attachments=attachments
         )
         return self._finalize_result(res)
 
@@ -408,16 +500,18 @@ class AgentOrchestrator:
         self,
         user_message: str,
         session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
         requested_mode: Optional[str] = None,
         requested_model: Optional[str] = None,
         system_prompt: Optional[str] = None,
         approved_action_ids: Optional[list[str]] = None,
         max_iterations: int = 5,
         compaction_threshold_override: Optional[int] = None,
-        chat_mode: Optional[str] = "WORKSPACE"
+        chat_mode: Optional[str] = "WORKSPACE",
+        attachments: Optional[list[dict[str, Any]]] = None
     ) -> OrchestratorResult:
         active_session_id = session_id or "default"
-        session_data = self.memory_store.get_or_create_session(active_session_id, chat_mode=chat_mode)
+        session_data = self.memory_store.get_or_create_session(active_session_id, chat_mode=chat_mode, project_id=project_id)
         effective_mode_str = (chat_mode or session_data.get("chat_mode") or "WORKSPACE").upper()
         resolved_chat_mode = ChatMode.SYSTEM if effective_mode_str == "SYSTEM" else ChatMode.WORKSPACE
 
@@ -437,8 +531,10 @@ class AgentOrchestrator:
             logger.info("Active dynamic skills matched: %s", active_skill_names)
 
         skill_prompt_injection = self.skills_loader.build_skill_prompt_injection(matched_skills)
+        attachment_prompt_injection = self._build_attachment_prompt(active_session_id, project_id=project_id, direct_attachments=attachments)
         base_system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
-        composed_system_prompt = base_system_prompt + skill_prompt_injection
+        composed_system_prompt = base_system_prompt + skill_prompt_injection + attachment_prompt_injection
+
 
         # 3. Dynamic Tool Aggregation
         mcp_tools = self.mcp_manager.get_tool_definitions()
@@ -963,13 +1059,15 @@ class AgentOrchestrator:
         self,
         user_message: str,
         session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
         requested_mode: Optional[str] = None,
         requested_model: Optional[str] = None,
         system_prompt: Optional[str] = None,
         approved_action_ids: Optional[list[str]] = None,
         max_iterations: int = 5,
         compaction_threshold_override: Optional[int] = None,
-        chat_mode: Optional[str] = "WORKSPACE"
+        chat_mode: Optional[str] = "WORKSPACE",
+        attachments: Optional[list[dict[str, Any]]] = None
     ):
         """
         Asynchronously streams chat tokens, tool execution events, and metadata.
@@ -996,7 +1094,7 @@ class AgentOrchestrator:
             yield {"event": "done", "data": {"response": "Voice output is now disabled.", "model": "system", "provider": "system", "session_id": active_session_id}}
             return
 
-        session_data = self.memory_store.get_or_create_session(active_session_id, chat_mode=chat_mode)
+        session_data = self.memory_store.get_or_create_session(active_session_id, chat_mode=chat_mode, project_id=project_id)
         effective_mode_str = (chat_mode or session_data.get("chat_mode") or "WORKSPACE").upper()
         resolved_chat_mode = ChatMode.SYSTEM if effective_mode_str == "SYSTEM" else ChatMode.WORKSPACE
 
@@ -1009,8 +1107,10 @@ class AgentOrchestrator:
         matched_skills = self.skills_loader.match_skills(user_message)
         active_skill_names = [s.name for s in matched_skills]
         skill_prompt_injection = self.skills_loader.build_skill_prompt_injection(matched_skills)
+        attachment_prompt_injection = self._build_attachment_prompt(active_session_id, project_id=project_id, direct_attachments=attachments)
         base_system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
-        composed_system_prompt = base_system_prompt + skill_prompt_injection
+        composed_system_prompt = base_system_prompt + skill_prompt_injection + attachment_prompt_injection
+
 
         mcp_tools = self.mcp_manager.get_tool_definitions()
         relevant_base_tools = get_relevant_tools(user_message, chat_mode=effective_mode_str, matched_skills=matched_skills)

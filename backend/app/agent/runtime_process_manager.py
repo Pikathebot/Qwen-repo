@@ -39,18 +39,21 @@ class RuntimeProcessManager:
         fast_model_path: Optional[str] = None,
         ctx_size: Optional[int] = None,
         gpu_layers: Optional[int] = None,
+        use_mmap: Optional[bool] = None,
         startup_timeout: Optional[float] = None,
         extra_args: Optional[list[str]] = None,
     ):
-        self.host = host or settings.llamacpp_host
-        self.port = port if port is not None else settings.llamacpp_port
-        self.server_exe = server_exe or settings.llamacpp_server_exe
-        self.main_model_path = main_model_path or settings.llamacpp_main_model_path
-        self.fast_model_path = fast_model_path or settings.llamacpp_fast_model_path
-        self.ctx_size = ctx_size if ctx_size is not None else settings.llamacpp_ctx_size
-        self.gpu_layers = gpu_layers if gpu_layers is not None else settings.llamacpp_gpu_layers
-        self.startup_timeout = startup_timeout if startup_timeout is not None else settings.llamacpp_startup_timeout_seconds
-        self.extra_args = list(extra_args if extra_args is not None else settings.llamacpp_extra_args)
+        self.host = host or settings.llama_host
+        self.port = port if port is not None else settings.llama_port
+        self.server_exe = server_exe or settings.llama_server_exe
+        self.main_model_path = main_model_path or settings.llama_main_model_path
+        self.fast_model_path = fast_model_path or settings.llama_fast_model_path
+        self.ctx_size = ctx_size
+        self.gpu_layers = gpu_layers if gpu_layers is not None else settings.llama_n_gpu_layers
+        self.use_mmap = use_mmap if use_mmap is not None else settings.llama_use_mmap
+        self.startup_timeout = startup_timeout if startup_timeout is not None else settings.llama_startup_timeout_seconds
+        self.extra_args = list(extra_args if extra_args is not None else settings.llama_extra_args)
+
 
         self._process: Optional[subprocess.Popen] = None
         self._current_model_kind: Optional[str] = None
@@ -142,7 +145,9 @@ class RuntimeProcessManager:
         async with self._lock:
             # 1. If health check passes
             if await self.health_check(timeout=2.0):
-                if self._current_model_kind in (alias, model_kind):
+                if self._current_model_kind in (alias, model_kind) or self._current_model_kind is None:
+                    self._current_model_kind = model_kind
+                    self._externally_managed = True
                     return True
 
                 # Different model kind requested -> trigger switch
@@ -154,19 +159,31 @@ class RuntimeProcessManager:
                 )
                 await self._stop_internal()
 
+
             # 2. Server not running or needs restart with new model
+            ctx_size_for_model = (
+                self.ctx_size
+                if self.ctx_size is not None
+                else (
+                    settings.llama_ctx_size_fast if alias == "fast" else settings.llama_ctx_size_main
+                )
+            )
+
             cmd = [
                 str(resolved_exe),
                 "--model", str(resolved_model),
                 "--alias", alias,
                 "--host", str(self.host),
                 "--port", str(self.port),
-                "--ctx-size", str(self.ctx_size),
+                "--ctx-size", str(ctx_size_for_model),
                 "--n-gpu-layers", str(self.gpu_layers),
                 "--parallel", "1",
             ]
+            if not self.use_mmap:
+                cmd.append("--no-mmap")
             if self.extra_args:
                 cmd.extend(self.extra_args)
+
 
             logger.info("Spawning llama-server process: %s", " ".join(cmd))
             try:

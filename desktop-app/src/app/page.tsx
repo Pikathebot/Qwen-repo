@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useChat } from "@/hooks/useChat";
 import { useGovernor } from "@/hooks/useGovernor";
 import { Sidebar } from "@/components/Sidebar";
@@ -8,14 +8,34 @@ import { ChatView } from "@/components/ChatView";
 import { Composer } from "@/components/Composer";
 import { GovernorPill } from "@/components/GovernorPill";
 import { SettingsDialog } from "@/components/SettingsDialog";
+import { RightPanel } from "@/components/RightPanel";
+import { fetchActiveProject, fetchArtifacts } from "@/lib/api";
 
 export default function Home() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [chatMode, setChatMode] = useState<"WORKSPACE" | "SYSTEM">("WORKSPACE");
+  const [activeProjectId, setActiveProjectId] = useState<string | undefined>(undefined);
+  const [artifactsCount, setArtifactsCount] = useState<number>(0);
 
   const governor = useGovernor(2000);
   const chat = useChat();
+
+  const syncWorkspaceState = useCallback(async () => {
+    try {
+      const activeProj = await fetchActiveProject();
+      setActiveProjectId(activeProj?.id);
+      const arts = await fetchArtifacts(chat.activeSessionId, activeProj?.id);
+      setArtifactsCount(arts.length);
+    } catch {
+      // ignore
+    }
+  }, [chat.activeSessionId]);
+
+  useEffect(() => {
+    syncWorkspaceState();
+  }, [syncWorkspaceState, chat.messages.length]);
 
   const handleQuickPrompt = (prompt: string) => {
     chat.sendMessage(prompt);
@@ -78,6 +98,26 @@ export default function Home() {
               onOpenSettings={() => setSettingsOpen(true)}
             />
 
+            {/* Right Panel Toggle Button (Amendment 4) */}
+            <button
+              onClick={() => setRightPanelOpen(!rightPanelOpen)}
+              className={`p-1.5 rounded-xl border transition-all flex items-center gap-1.5 text-xs shadow-sm ${
+                rightPanelOpen
+                  ? "bg-cyan-accent/15 border-cyan-accent/40 text-cyan-accent"
+                  : "bg-surface border-subtle hover:border-white/20 text-text-muted hover:text-text-main"
+              }`}
+              title="Toggle Artifacts & Workspace Panel"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              {artifactsCount > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-cyan-accent/20 text-cyan-accent font-mono">
+                  {artifactsCount}
+                </span>
+              )}
+            </button>
+
             <button
               onClick={() => setSettingsOpen(true)}
               className="p-1.5 rounded-xl bg-surface border border-subtle hover:border-white/20 text-text-muted hover:text-text-main transition-colors shadow-sm"
@@ -120,12 +160,25 @@ export default function Home() {
 
         {/* Bottom Composer */}
         <Composer
-          onSendMessage={(text) => chat.sendMessage(text)}
+          onSendMessage={(text, attachments) =>
+            chat.sendMessage(text, undefined, attachments, activeProjectId)
+          }
           isLoading={chat.isLoading}
+
           onAbort={chat.abortStream}
           disabled={governor.status === "offline"}
+          activeSessionId={chat.activeSessionId}
+          activeProjectId={activeProjectId}
         />
       </main>
+
+      {/* 3. Right Panel (Artifacts | Files | Context | Activity) */}
+      <RightPanel
+        isOpen={rightPanelOpen}
+        onClose={() => setRightPanelOpen(false)}
+        activeSessionId={chat.activeSessionId}
+        activeProjectId={activeProjectId}
+      />
 
       {/* Settings Modal */}
       <SettingsDialog

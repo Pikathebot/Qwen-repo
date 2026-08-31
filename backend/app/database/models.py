@@ -17,10 +17,12 @@ class Session(SQLModel, table=True):
     __tablename__ = "sessions"
 
     session_id: str = Field(primary_key=True)
+    project_id: Optional[str] = Field(default=None, foreign_key="projects.id", index=True)
     title: Optional[str] = None
     chat_mode: Optional[str] = Field(default="WORKSPACE")
     created_at: Optional[float] = None
     updated_at: Optional[float] = None
+
 
 
 class Message(SQLModel, table=True):
@@ -92,8 +94,11 @@ class Project(SQLModel, table=True):
     description: Optional[str] = None
     instructions: Optional[str] = None
     workspace_path: Optional[str] = None
+    local_folders_json: Optional[str] = None
+    is_active: bool = Field(default=False, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
 
 
 class Artifact(SQLModel, table=True):
@@ -108,6 +113,31 @@ class Artifact(SQLModel, table=True):
     version: int = Field(default=1)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ArtifactVersion(SQLModel, table=True):
+    __tablename__ = "artifact_versions"
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    artifact_id: str = Field(foreign_key="artifacts.id", index=True)
+    version: int = Field(index=True)
+    content: str
+    summary: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Attachment(SQLModel, table=True):
+    __tablename__ = "attachments"
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    session_id: Optional[str] = Field(default=None, foreign_key="sessions.session_id", index=True)
+    project_id: Optional[str] = Field(default=None, foreign_key="projects.id", index=True)
+    filename: str = Field(index=True)
+    path: str
+    size_bytes: int
+    content_type: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
 
 
 class Memory(SQLModel, table=True):

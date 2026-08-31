@@ -31,14 +31,69 @@ export interface Message {
   pendingConfirmations?: PendingConfirmation[];
 }
 
+export interface Project {
+  id: string;
+  name: string;
+  description?: string | null;
+  instructions?: string | null;
+  workspace_path?: string | null;
+  local_folders: string[];
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Session {
   session_id: string;
+  project_id?: string | null;
   chat_mode?: string;
   created_at?: string;
   updated_at?: string;
   message_count?: number;
   last_message?: string;
 }
+
+export interface Attachment {
+  id: string;
+  session_id?: string | null;
+  project_id?: string | null;
+  filename: string;
+  path: string;
+  size_bytes: number;
+  content_type?: string | null;
+  created_at: string;
+}
+
+export interface ArtifactVersion {
+  id: string;
+  artifact_id: string;
+  version: number;
+  content: string;
+  summary?: string | null;
+  created_at: string;
+}
+
+export interface Artifact {
+  id: string;
+  project_id?: string | null;
+  session_id?: string | null;
+  name: string;
+  type: string;
+  content: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectFile {
+  name: string;
+  path: string;
+  size_bytes: number;
+  is_dir: boolean;
+  updated_at?: number | null;
+}
+
+
 
 export interface HealthResponse {
   status: "ok" | "degraded";

@@ -36,6 +36,9 @@ from app.voice.transcriber import AudioTranscriber
 from app.voice.synthesizer import VoiceSynthesizer
 from app.agent.tts.chatterbox_engine import ChatterboxEngine
 from app.agent.tools.audio_playback import is_playing as is_audio_playing, stop_playback as stop_audio_playback
+from app.routers import projects_router, artifacts_router
+
+
 
 # Configure logging
 logging.basicConfig(
@@ -64,9 +67,8 @@ def run_db_migrations() -> None:
 
 # Initialize global subsystems
 async def auto_unload_models() -> bool:
-    """Automatically evicts active models from GPU VRAM by stopping llama-server and resetting fallback runtimes."""
+    """Automatically evicts active models from GPU VRAM by stopping llama-server."""
     success = True
-    # 1. Stop llama-server process (Primary local runtime - 100% process-based VRAM unload)
     try:
         pm = get_runtime_process_manager()
         await pm.stop()
@@ -75,15 +77,8 @@ async def auto_unload_models() -> bool:
         logger.warning("Error stopping llama-server on auto-unload: %s", e)
         success = False
 
-    # 2. Evict fallback Ollama if running
-    try:
-        ollama_provider = get_model_provider("ollama")
-        await ollama_provider.unload_model()
-        logger.info("Governor auto-unload: Ollama keep-alive cleared.")
-    except Exception as e:
-        logger.debug("Ollama auto-unload error: %s", e)
-
     return success
+
 
 
 governor = ResourceGovernor(
@@ -105,8 +100,13 @@ process_watcher = ProcessWatcher(
     launch_debounce_seconds=settings.governor_process_launch_debounce,
     recovery_debounce_seconds=settings.governor_process_recovery_debounce,
 )
-memory_store = MemoryStore(db_path=settings.memory_db_path)
+from app.database.session import SessionLocal
+from app.memory.store import MemoryStore
+
+# Initialize global subsystems
+memory_store = MemoryStore(session_factory=SessionLocal)
 reliability_monitor = ReliabilityMonitor(memory_store=memory_store)
+
 compactor = ContextCompactor(
     max_context_tokens=settings.memory_max_context_tokens,
     tool_pruning_char_threshold=settings.memory_tool_pruning_char_threshold
@@ -177,6 +177,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(projects_router)
+app.include_router(artifacts_router)
+
+
+
 def _get_ui_directory() -> Optional[Path]:
     import sys
     candidates = []
@@ -200,15 +205,21 @@ if UI_DIR:
 
 
 
-def get_ollama_client() -> ollama.AsyncClient:
-    return ollama.AsyncClient(host=settings.ollama_host)
+def get_ollama_client() -> Optional[ollama.AsyncClient]:
+    try:
+        return ollama.AsyncClient(host=settings.ollama_host or "http://localhost:11434")
+    except Exception:
+        return None
 
 
-def get_lmstudio_client() -> LMStudioClient:
-    return LMStudioClient(
-        base_url=settings.lmstudio_base_url,
-        timeout=180.0
-    )
+def get_lmstudio_client() -> Optional[LMStudioClient]:
+    try:
+        return LMStudioClient(
+            base_url=settings.lmstudio_base_url or "http://localhost:1234/v1",
+            timeout=180.0
+        )
+    except Exception:
+        return None
 
 
 def get_openrouter_client() -> OpenRouterClient:
@@ -216,6 +227,8 @@ def get_openrouter_client() -> OpenRouterClient:
         api_key=settings.openrouter_api_key,
         base_url=settings.openrouter_base_url
     )
+
+
 
 
 class ChatRequest(BaseModel):
@@ -241,6 +254,15 @@ class ChatRequest(BaseModel):
         default="WORKSPACE",
         description="Chat mode: 'WORKSPACE' (default) or 'SYSTEM'"
     )
+    project_id: Optional[str] = Field(
+        default=None,
+        description="Optional active project ID"
+    )
+    attachments: Optional[list[dict[str, Any]]] = Field(
+        default=None,
+        description="Optional list of attached files"
+    )
+
 
 
 
@@ -270,12 +292,8 @@ class HealthResponse(BaseModel):
     status: str
     active_backend: str
     configured_model: str
-    lmstudio_base_url: str
-    lmstudio_connected: bool
-    lmstudio_model: str
-    ollama_host: str
-    ollama_connected: bool
-    ollama_model: str
+    llama_base_url: str
+    llama_connected: bool
     available_models: list[str]
     governor_throttled: bool
     openrouter_configured: bool
@@ -311,7 +329,7 @@ class GovernorStatusResponse(BaseModel):
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Health check endpoint verifying backend status, llama.cpp, Ollama, governor, MCP, skills, and voice."""
+    """Health check endpoint verifying backend status, llama.cpp, governor, MCP, skills, and voice."""
     primary_provider = get_model_provider()
     primary_connected = await primary_provider.health_check()
     available_models: list[str] = []
@@ -322,22 +340,12 @@ async def health_check():
         except Exception:
             available_models = []
 
-    # Check Ollama as fallback
-    ollama_connected = False
-    try:
-        ollama_provider = get_model_provider("ollama")
-        ollama_connected = await ollama_provider.health_check()
-    except Exception:
-        pass
-
-    lmstudio_connected = False
-
     active_backend = getattr(settings, "model_runtime", "llama_cpp")
-    configured_model = settings.llamacpp_main_model_path if active_backend == "llama_cpp" else settings.ollama_model
+    configured_model = settings.llama_main_model_path
 
     throttled, _ = await governor.is_throttled()
     openrouter_client = get_openrouter_client()
-    sessions = memory_store.list_sessions()
+    sessions = await asyncio.to_thread(memory_store.list_sessions)
     mcp_servers = mcp_manager.list_servers()
     skills = skills_loader.list_skills()
 
@@ -345,12 +353,8 @@ async def health_check():
         status="ok" if not throttled else "degraded",
         active_backend=active_backend,
         configured_model=configured_model,
-        lmstudio_base_url=settings.lmstudio_base_url,
-        lmstudio_connected=lmstudio_connected,
-        lmstudio_model=settings.lmstudio_model,
-        ollama_host=settings.ollama_host,
-        ollama_connected=ollama_connected,
-        ollama_model=settings.ollama_model,
+        llama_base_url=settings.llama_base_url,
+        llama_connected=primary_connected,
         available_models=available_models,
         governor_throttled=throttled,
         openrouter_configured=openrouter_client.is_configured and settings.openrouter_enabled,
@@ -359,6 +363,7 @@ async def health_check():
         available_skills_count=len(skills),
         voice_enabled=wake_detector.is_listening
     )
+
 
 
 @app.get("/governor/status", response_model=GovernorStatusResponse)
@@ -465,30 +470,32 @@ async def governor_history(limit: int = 20):
 
 
 @app.get("/sessions")
-async def list_sessions():
-    """List all stored conversation sessions."""
-    return memory_store.list_sessions()
+async def list_sessions(project_id: Optional[str] = None):
+    """List all stored conversation sessions, optionally filtered by project_id."""
+    return await asyncio.to_thread(memory_store.list_sessions, project_id=project_id)
+
 
 
 @app.get("/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str):
     """Retrieve full message history for a specific session."""
-    return memory_store.get_messages(session_id)
+    return await asyncio.to_thread(memory_store.get_messages, session_id)
 
 
 @app.get("/sessions/{session_id}/compactions")
 async def get_session_compactions(session_id: str):
     """Retrieve compaction audit events for a session."""
-    return memory_store.get_compaction_events(session_id)
+    return await asyncio.to_thread(memory_store.get_compaction_events, session_id)
 
 
 @app.delete("/sessions/{session_id}")
 async def delete_session(session_id: str):
     """Delete a conversation session and all its stored messages."""
-    deleted = memory_store.delete_session(session_id)
+    deleted = await asyncio.to_thread(memory_store.delete_session, session_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
     return {"deleted": True, "session_id": session_id}
+
 
 
 @app.get("/skills")
@@ -645,23 +652,14 @@ class UnloadModelRequest(BaseModel):
 
 @app.post("/models/unload")
 async def unload_models(req: Optional[UnloadModelRequest] = None):
-    """Immediately evicts loaded models from GPU VRAM by terminating llama-server process and clearing Ollama."""
+    """Immediately evicts loaded models from GPU VRAM by terminating llama-server process."""
     unloaded_models = []
-    # 1. Stop llama-server (Primary runtime)
     try:
         pm = get_runtime_process_manager()
         await pm.stop()
-        unloaded_models.append(f"llama_cpp:{settings.llamacpp_main_model_path}")
+        unloaded_models.append(f"llama_cpp:{settings.llama_main_model_path}")
     except Exception as e:
         logger.warning("Error unloading llama-server: %s", e)
-
-    # 2. Unload from Ollama if running
-    try:
-        ollama_provider = get_model_provider("ollama")
-        await ollama_provider.unload_model(req.model_name if req else None)
-        unloaded_models.append("ollama")
-    except Exception as e:
-        logger.debug("Error unloading Ollama: %s", e)
 
     logger.info("Unloaded models from VRAM: %s", unloaded_models)
     return {
@@ -683,16 +681,12 @@ async def load_model_endpoint(req: Optional[LoadModelRequest] = None):
     target_model = (
         req.model_name
         if req and req.model_name
-        else ("main" if target_backend == "llama_cpp" else settings.ollama_main_model)
+        else "main"
     )
 
     async with governor.activity(ActivityType.MODEL_LOADING, label=target_model):
-        if target_backend == "llama_cpp":
-            pm = get_runtime_process_manager()
-            success = await pm.ensure_running(target_model)
-        else:
-            ollama_provider = get_model_provider("ollama")
-            success = await ollama_provider.health_check()
+        pm = get_runtime_process_manager()
+        success = await pm.ensure_running(target_model)
 
     return {
         "success": success,
@@ -700,6 +694,7 @@ async def load_model_endpoint(req: Optional[LoadModelRequest] = None):
         "backend": target_backend,
         "message": f"Model '{target_model}' loaded successfully." if success else f"Failed to load '{target_model}'."
     }
+
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -746,11 +741,13 @@ async def chat(request: ChatRequest):
             result = await orchestrator.run(
                 user_message=active_message,
                 session_id=request.session_id,
+                project_id=request.project_id,
                 requested_mode=request.mode,
                 requested_model=request.model,
                 system_prompt=request.system_prompt,
                 approved_action_ids=request.approved_action_ids,
-                chat_mode=request.chat_mode
+                chat_mode=request.chat_mode,
+                attachments=request.attachments
             )
 
         return ChatResponse(
@@ -816,12 +813,15 @@ async def chat_stream(request: ChatRequest):
                 async for event in orchestrator.run_stream(
                     user_message=active_message,
                     session_id=request.session_id,
+                    project_id=request.project_id,
                     requested_mode=request.mode,
                     requested_model=request.model,
                     system_prompt=request.system_prompt,
                     approved_action_ids=request.approved_action_ids,
-                    chat_mode=request.chat_mode
+                    chat_mode=request.chat_mode,
+                    attachments=request.attachments
                 ):
+
                     event_type = event.get("event", "message")
                     data_json = json.dumps(event.get("data", {}))
                     yield f"event: {event_type}\ndata: {data_json}\n\n"

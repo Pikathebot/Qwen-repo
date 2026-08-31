@@ -49,7 +49,8 @@ async def test_chat_returns_normalized_message():
         ]
     }
     mock_resp = MagicMock(status_code=200, json=lambda: mock_api_resp)
-    with patch.object(provider, "health_check", return_value=True), \
+    with patch.object(provider, "_ensure_server_ready", new_callable=AsyncMock), \
+         patch.object(provider, "health_check", return_value=True), \
          patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
         mock_post.return_value = mock_resp
         res = await provider.chat(messages=[{"role": "user", "content": "Hi"}], model="main")
@@ -92,7 +93,8 @@ async def test_chat_parses_tool_calls_and_handles_malformed_arguments():
         ]
     }
     mock_resp = MagicMock(status_code=200, json=lambda: mock_api_resp)
-    with patch.object(provider, "health_check", return_value=True), \
+    with patch.object(provider, "_ensure_server_ready", new_callable=AsyncMock), \
+         patch.object(provider, "health_check", return_value=True), \
          patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
         mock_post.return_value = mock_resp
         res = await provider.chat(messages=[{"role": "user", "content": "Read file"}], model="main", tools=[read_file])
@@ -138,7 +140,8 @@ async def test_stream_accumulates_tool_calls_and_yields_deltas():
         async def __aexit__(self, exc_type, exc_val, exc_tb):
             pass
 
-    with patch.object(provider, "health_check", return_value=True), \
+    with patch.object(provider, "_ensure_server_ready", new_callable=AsyncMock), \
+         patch.object(provider, "health_check", return_value=True), \
          patch("httpx.AsyncClient.stream", return_value=MockStreamContext()):
         events = []
         async for ev in provider.stream_chat(messages=[{"role": "user", "content": "Search"}], model="main", tools=[web_search]):
@@ -172,7 +175,8 @@ async def test_sampling_profile_parameters_sent_correctly():
         captured_payloads.append(json)
         return mock_resp
 
-    with patch.object(provider, "health_check", return_value=True), \
+    with patch.object(provider, "_ensure_server_ready", new_callable=AsyncMock), \
+         patch.object(provider, "health_check", return_value=True), \
          patch("httpx.AsyncClient.post", side_effect=capture_post):
         # 1. Profile general
         await provider.chat(messages=[{"role": "user", "content": "hi"}], profile="general")

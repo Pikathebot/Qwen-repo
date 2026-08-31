@@ -3,7 +3,7 @@ Database module for Jarvis memory and extended schema.
 Exports SQLModel models, database engine, and session dependencies.
 """
 from sqlmodel import Session
-from app.database.session import engine, get_db
+from app.database.session import engine, get_db, SessionLocal, get_session
 from app.database.models import (
     Project,
     Artifact,
@@ -22,7 +22,10 @@ from app.database.models import (
 __all__ = [
     "engine",
     "get_db",
+    "SessionLocal",
+    "get_session",
     "Session",
+
     "Project",
     "Artifact",
     "Memory",

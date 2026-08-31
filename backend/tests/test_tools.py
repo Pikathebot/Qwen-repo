@@ -38,14 +38,15 @@ def test_read_file_not_found():
 
 
 def test_read_file_directory():
-    result = read_file("docs")
+    result = read_file("app")
     assert "is a directory" in result
 
 
 def test_list_directory_success():
-    result = list_directory("docs")
-    assert "Contents of 'docs':" in result
-    assert "PLAN.md" in result
+    result = list_directory("app")
+    assert "Contents of 'app':" in result
+    assert "main.py" in result
+
 
 
 def test_list_directory_not_found():

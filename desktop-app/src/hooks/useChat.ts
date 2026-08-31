@@ -14,7 +14,14 @@ export interface UseChatReturn {
   error: string | null;
   selectedModel: string | null;
   setSelectedModel: (model: string | null) => void;
-  sendMessage: (content: string, approvedActionIds?: string[]) => Promise<void>;
+  sendMessage: (
+
+    content: string,
+    approvedActionIds?: string[],
+    attachments?: import("@/lib/types").Attachment[],
+    projectId?: string
+  ) => Promise<void>;
+
   confirmAction: (actionId: string) => Promise<void>;
   denyAction: () => void;
   selectSession: (sessionId: string) => Promise<void>;
@@ -89,8 +96,13 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
   }, []);
 
   const sendMessage = useCallback(
-    async (content: string, approvedActionIds?: string[]) => {
-      if (!content.trim() && !approvedActionIds?.length) return;
+    async (
+      content: string,
+      approvedActionIds?: string[],
+      attachments?: import("@/lib/types").Attachment[],
+      projectId?: string
+    ) => {
+      if (!content.trim() && !approvedActionIds?.length && (!attachments || attachments.length === 0)) return;
       if (isLoading) return;
 
       setError(null);
@@ -129,10 +141,13 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
         await streamChat({
           message: content.trim() || lastUserPromptRef.current,
           sessionId: activeSessionId,
+          projectId: projectId,
           model: selectedModel || undefined,
           approvedActionIds,
+          attachments,
           signal: controller.signal,
           callbacks: {
+
             onToken: ({ delta }) => {
               setMessages((prev) =>
                 prev.map((msg) =>

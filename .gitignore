@@ -54,7 +54,11 @@ dist/
 
 # Nested / duplicate snapshots
 jarvis_project/
+workspace/
+backend/workspace/
+*.tsbuildinfo
 
 # OS specific
 .DS_Store
 Thumbs.db
+

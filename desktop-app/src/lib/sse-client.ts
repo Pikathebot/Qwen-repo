@@ -1,14 +1,16 @@
-import { SSEEventMap, SSEEventCallbacks } from "./types";
+import { Attachment, SSEEventMap, SSEEventCallbacks } from "./types";
 import { API_BASE_URL } from "./api";
 
 export interface StreamChatOptions {
   message: string;
   sessionId?: string;
+  projectId?: string;
   model?: string;
   mode?: "auto" | "normal" | "heavy";
   chatMode?: "WORKSPACE" | "SYSTEM";
   systemPrompt?: string;
   approvedActionIds?: string[];
+  attachments?: Attachment[];
   signal?: AbortSignal;
   callbacks: SSEEventCallbacks;
 }
@@ -20,23 +22,28 @@ export interface StreamChatOptions {
 export async function streamChat({
   message,
   sessionId,
+  projectId,
   model,
   mode = "auto",
   chatMode = "WORKSPACE",
   systemPrompt,
   approvedActionIds,
+  attachments,
   signal,
   callbacks,
 }: StreamChatOptions): Promise<void> {
   const payload = {
     message,
     session_id: sessionId,
+    project_id: projectId,
     model,
     mode,
     chat_mode: chatMode,
     system_prompt: systemPrompt,
     approved_action_ids: approvedActionIds,
+    attachments,
   };
+
 
   const response = await fetch(`${API_BASE_URL}/chat/stream`, {
     method: "POST",
