@@ -232,3 +232,78 @@ def execute_tool(tool_name: str, arguments: dict[str, Any]) -> str:
     except Exception as e:
         logger.error("Unhandled error in tool '%s': %s", tool_name, e)
         return f"Error executing tool '{tool_name}': {str(e)}"
+
+
+def get_relevant_tools(
+    query: str,
+    chat_mode: str = "WORKSPACE",
+    matched_skills: Optional[list] = None
+) -> list[Callable[..., Any]]:
+    """
+    Intelligently filters tool schemas to reduce prompt prefill token bloat.
+    Returns the minimal subset of relevant tools based on query intent.
+    """
+    if matched_skills and len(matched_skills) > 0:
+        return AVAILABLE_TOOLS
+
+    q = (query or "").lower().strip()
+
+    # Conversational / chitchat / direct conceptual queries need NO tools
+    chitchat_triggers = {
+        "hi", "hello", "hey", "sup", "greetings", "good morning", "good evening",
+        "who are you", "what are you", "how are you", "help", "thanks", "thank you"
+    }
+    if q in chitchat_triggers or len(q) < 4:
+        if not any(w in q for w in ("file", "find", "search", "open", "run", "read", "write")):
+            return []
+
+    tools = set()
+
+    # 1. Web search triggers
+    if any(w in q for w in ("search", "google", "look up", "online", "internet", "website", "url", "http://", "https://", "latest news", "weather", "who won", "what is the price", "documentation")):
+        tools.add(web_search)
+        tools.add(fetch_url)
+
+    # 2. File & Code triggers
+    file_triggers = (
+        "file", "read", "write", "patch", "edit", "modify", "create", "delete",
+        "directory", "folder", "dir", "code", "grep", "find", "script", "content",
+        ".py", ".js", ".ts", ".html", ".css", ".json", ".md", ".txt", ".sh", ".bat", ".ps1"
+    )
+    if any(w in q for w in file_triggers):
+        tools.add(read_file)
+        tools.add(write_file)
+        tools.add(patch_file)
+        tools.add(find_files)
+        tools.add(grep_in_files)
+        tools.add(list_directory)
+
+    # 3. System / App / OS triggers
+    os_triggers = (
+        "open", "launch", "app", "window", "volume", "sound", "mute", "unmute",
+        "music", "play", "pause", "clipboard", "copy", "paste", "process",
+        "task", "kill", "terminate", "notification", "toast", "powershell",
+        "command", "terminal", "run"
+    )
+    if any(w in q for w in os_triggers):
+        tools.add(launch_app)
+        tools.add(focus_app)
+        tools.add(set_volume)
+        tools.add(mute_toggle)
+        tools.add(media_key)
+        tools.add(get_clipboard)
+        tools.add(set_clipboard)
+        tools.add(list_processes)
+        tools.add(kill_process)
+        tools.add(send_toast)
+        tools.add(execute_command)
+
+    if tools:
+        return list(tools)
+
+    action_words = ("do", "check", "fix", "inspect", "show", "list", "diagnose", "review", "test", "build", "generate", "update")
+    if chat_mode == "SYSTEM" or any(w in q for w in action_words):
+        return AVAILABLE_TOOLS
+
+    return []
+

@@ -25,6 +25,5 @@ winotify>=1.1.0
 pywin32>=306
 sounddevice>=0.5.0
 soundfile>=0.14.0
-
-
-
+sqlmodel>=0.0.14
+alembic>=1.13.0

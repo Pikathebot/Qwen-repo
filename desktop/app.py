@@ -46,7 +46,7 @@ def launch_desktop(lock_socket: socket.socket = None):
 
     # 1. Create standard modern windowed desktop app with persistent origin
     window = webview.create_window(
-        title="Jarvis — Local AI Assistant",
+        title="Jarvis - Local AI Command Center",
         url=ui_url,
         js_api=api,
         width=1040,

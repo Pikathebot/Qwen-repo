@@ -1,3 +1,7 @@
+# DEPRECATED: LMStudioClient is deprecated in favor of ModelProvider abstraction
+# (LlamaCppProvider primary, OllamaProvider fallback) and RuntimeProcessManager.
+# Retained temporarily for backward compatibility. Do not use for new features.
+
 import inspect
 import json
 import logging
@@ -321,3 +325,132 @@ class LMStudioClient:
             },
             "raw": data
         }
+
+    async def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        tools: Optional[list[Any]] = None,
+        temperature: float = 0.7,
+        timeout: Optional[float] = None
+    ):
+        """
+        Stream chat completion tokens and tool calls from LM Studio.
+        Yields events:
+        - {"type": "token", "delta": str}
+        - {"type": "reasoning", "delta": str}
+        - {"type": "done", "content": str, "tool_calls": list[dict] | None}
+        """
+        req_timeout = timeout or self.timeout
+        url = f"{self.base_url}/chat/completions"
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True,
+        }
+
+        if tools:
+            formatted_tools = []
+            for t in tools:
+                schema = convert_tool_to_openai_schema(t)
+                if schema:
+                    formatted_tools.append(schema)
+            if formatted_tools:
+                payload["tools"] = formatted_tools
+                payload["tool_choice"] = "auto"
+
+        logger.info("Streaming request from LM Studio model '%s' (tools=%d)", model, len(payload.get("tools", [])))
+
+        accumulated_content = []
+        accumulated_reasoning = []
+        tool_calls_map: dict[int, dict[str, Any]] = {}
+
+        async with httpx.AsyncClient(timeout=req_timeout) as client:
+            try:
+                async with client.stream("POST", url, json=payload, headers=self._get_headers()) as response:
+                    if response.status_code != 200:
+                        err_body = await response.aread()
+                        raise RuntimeError(f"LM Studio streaming error HTTP {response.status_code}: {err_body.decode('utf-8', errors='ignore')}")
+
+                    async for line in response.aiter_lines():
+                        if not line:
+                            continue
+                        if line.startswith("data: "):
+                            raw_data = line[6:].strip()
+                            if raw_data == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(raw_data)
+                            except Exception:
+                                continue
+
+                            choices = chunk.get("choices", [])
+                            if not choices:
+                                continue
+                            delta = choices[0].get("delta", {})
+
+                            content_delta = delta.get("content")
+                            if content_delta:
+                                accumulated_content.append(content_delta)
+                                yield {"type": "token", "delta": content_delta}
+
+                            reasoning_delta = delta.get("reasoning_content")
+                            if reasoning_delta:
+                                accumulated_reasoning.append(reasoning_delta)
+                                yield {"type": "reasoning", "delta": reasoning_delta}
+
+                            tc_deltas = delta.get("tool_calls")
+                            if tc_deltas and isinstance(tc_deltas, list):
+                                for tc in tc_deltas:
+                                    idx = tc.get("index", 0)
+                                    if idx not in tool_calls_map:
+                                        tool_calls_map[idx] = {
+                                            "id": tc.get("id") or f"call_{idx}",
+                                            "name": "",
+                                            "args_chunks": []
+                                        }
+                                    if tc.get("id"):
+                                        tool_calls_map[idx]["id"] = tc["id"]
+                                    fn = tc.get("function", {})
+                                    if fn.get("name"):
+                                        tool_calls_map[idx]["name"] = fn["name"]
+                                    if fn.get("arguments"):
+                                        tool_calls_map[idx]["args_chunks"].append(fn["arguments"])
+
+            except httpx.TimeoutException:
+                logger.error("LM Studio stream timed out after %.1fs", req_timeout)
+                raise RuntimeError(f"LM Studio stream timed out after {req_timeout}s.")
+            except Exception as e:
+                logger.error("LM Studio streaming error: %s", e)
+                raise RuntimeError(f"LM Studio streaming connection error: {e}")
+
+        # Assemble final tool_calls list if any
+        final_tool_calls = None
+        if tool_calls_map:
+            final_tool_calls = []
+            for idx in sorted(tool_calls_map.keys()):
+                tc_data = tool_calls_map[idx]
+                raw_args_str = "".join(tc_data["args_chunks"])
+                try:
+                    parsed_args = json.loads(raw_args_str) if raw_args_str else {}
+                except Exception:
+                    parsed_args = {"raw": raw_args_str}
+                final_tool_calls.append({
+                    "id": tc_data["id"],
+                    "type": "function",
+                    "function": {
+                        "name": tc_data["name"],
+                        "arguments": parsed_args
+                    }
+                })
+
+        final_text = "".join(accumulated_content)
+        yield {
+            "type": "done",
+            "content": final_text,
+            "tool_calls": final_tool_calls,
+            "reasoning": "".join(accumulated_reasoning)
+        }
+

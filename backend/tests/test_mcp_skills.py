@@ -124,18 +124,19 @@ async def test_api_get_mcp_servers():
 @pytest.mark.anyio
 async def test_chat_with_dynamic_skills_matching():
     """Verify that a chat query triggering a skill records the active skill name."""
+    from unittest.mock import AsyncMock, patch
+    from app.agent.llamacpp_provider import LlamaCppProvider
+
     mock_resp = {
         "message": {
             "role": "assistant",
-            "content": "Code review complete."
-        }
+            "content": "Code review complete.",
+            "tool_calls": None
+        },
+        "raw": {}
     }
-    class FakeOllama:
-        async def chat(self, *args, **kwargs):
-            return mock_resp
-
-    from unittest.mock import patch
-    with patch("app.main.get_ollama_client", return_value=FakeOllama()):
+    with patch.object(LlamaCppProvider, "chat", new_callable=AsyncMock) as mock_chat:
+        mock_chat.return_value = mock_resp
         payload = {
             "message": "Please review code in docs/PLAN.md and check this code.",
             "session_id": f"test_skill_{uuid.uuid4().hex[:8]}",

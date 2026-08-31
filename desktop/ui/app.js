@@ -1,7 +1,6 @@
 const API_BASE = window.location.origin && window.location.origin.startsWith("http") ? window.location.origin : "http://127.0.0.1:8000";
 
-
-// State
+// --- Application State ---
 let activeSessionId = "session_" + Math.random().toString(36).substring(2, 9);
 let routingMode = "auto";
 let currentMode = "WORKSPACE";
@@ -14,25 +13,34 @@ let mediaRecorder = null;
 let audioChunks = [];
 let pendingActionIds = [];
 
-// DOM Elements
-const promptInput = document.getElementById("promptInput");
-const sendBtn = document.getElementById("sendBtn");
-const micBtn = document.getElementById("micBtn");
-const voiceToggleBtn = document.getElementById("voiceToggleBtn");
-const modelSelect = document.getElementById("modelSelect");
-const modeToggle = document.getElementById("modeToggle");
-const modePill = document.getElementById("modePill");
+// --- DOM Elements ---
+const appLayout = document.getElementById("appLayout");
+const sidebar = document.getElementById("sidebar");
+const sidebarCollapseBtn = document.getElementById("sidebarCollapseBtn");
+const sidebarExpandBtn = document.getElementById("sidebarExpandBtn");
+const newChatBtn = document.getElementById("newChatBtn");
+const refreshSessionsBtn = document.getElementById("refreshSessionsBtn");
+const sessionsList = document.getElementById("sessionsList");
+const sessionGroupHeader = document.getElementById("sessionGroupHeader");
+const skillsList = document.getElementById("skillsList");
+const skillsCountBadge = document.getElementById("skillsCountBadge");
 
-// Mode & Sidebar Elements
+// Mode & Workspace Elements
 const modeWorkspaceBtn = document.getElementById("modeWorkspaceBtn");
 const modeSystemBtn = document.getElementById("modeSystemBtn");
 const activeProjectIndicator = document.getElementById("activeProjectIndicator");
 const activeProjectName = document.getElementById("active-project-name");
-const sessionGroupHeader = document.getElementById("sessionGroupHeader");
 
 // Top Nav Elements
-const activeModelName = document.getElementById("activeModelName");
+const modelSelect = document.getElementById("modelSelect");
 const activeTierBadge = document.getElementById("activeTierBadge");
+const modeToggle = document.getElementById("modeToggle");
+const modePill = document.getElementById("modePill");
+const voiceToggleBtn = document.getElementById("voiceToggleBtn");
+const voiceToggleIcon = document.getElementById("voiceToggleIcon");
+const unloadModelBtn = document.getElementById("unloadModelBtn");
+
+// Governor & Telemetry Elements
 const governorWidgetContainer = document.getElementById("governorWidgetContainer");
 const governorPill = document.getElementById("governorPill");
 const governorPillLabel = document.getElementById("governor-pill__label");
@@ -47,14 +55,22 @@ const govCustomOverrideBtn = document.getElementById("govCustomOverrideBtn");
 const govForceReloadBtn = document.getElementById("govForceReloadBtn");
 const govClearErrorBtn = document.getElementById("govClearErrorBtn");
 const govHistoryList = document.getElementById("govHistoryList");
+
+// Telemetry Tooltip & Meters
 const govGpuVal = document.getElementById("govGpuVal");
 const govVramVal = document.getElementById("govVramVal");
 const govCpuVal = document.getElementById("govCpuVal");
 const govRamVal = document.getElementById("govRamVal");
+const govMeterGpuVal = document.getElementById("govMeterGpuVal");
+const govMeterGpuFill = document.getElementById("govMeterGpuFill");
+const govMeterVramVal = document.getElementById("govMeterVramVal");
+const govMeterVramFill = document.getElementById("govMeterVramFill");
+const govMeterCpuVal = document.getElementById("govMeterCpuVal");
+const govMeterCpuFill = document.getElementById("govMeterCpuFill");
+const govMeterRamVal = document.getElementById("govMeterRamVal");
+const govMeterRamFill = document.getElementById("govMeterRamFill");
 
 // Chat Viewport Elements
-const newChatBtn = document.getElementById("newChatBtn");
-const sessionsList = document.getElementById("sessionsList");
 const chatViewport = document.getElementById("chatViewport");
 const welcomeHero = document.getElementById("welcomeHero");
 const emptyStateTitle = document.getElementById("empty-state-title");
@@ -68,19 +84,41 @@ const approveActionBtn = document.getElementById("approveActionBtn");
 const rejectActionBtn = document.getElementById("rejectActionBtn");
 const statusDot = document.getElementById("statusDot");
 const statusText = document.getElementById("statusText");
+
+// Composer Elements
+const promptInput = document.getElementById("promptInput");
+const sendBtn = document.getElementById("sendBtn");
+const micBtn = document.getElementById("micBtn");
+
+// Quick Skill Buttons
 const skillReviewBtn = document.getElementById("skillReviewBtn");
 const skillDiagBtn = document.getElementById("skillDiagBtn");
-const unloadModelBtn = document.getElementById("unloadModelBtn");
+const skillWebSearchBtn = document.getElementById("skillWebSearchBtn");
 
 // --- Initialization ---
 document.addEventListener("DOMContentLoaded", () => {
+  initMarkdownParser();
   initUI();
   initVoice();
   initTelemetry();
+  initKeyShortcuts();
   syncVoiceOutputState();
   updateModelTierBadge();
   setChatMode(currentMode, false);
+  fetchSessions();
+  fetchModelsAndSkills();
 });
+
+function initMarkdownParser() {
+  if (window.marked) {
+    marked.setOptions({
+      gfm: true,
+      breaks: true,
+      headerIds: false,
+      mangle: false
+    });
+  }
+}
 
 function initUI() {
   // Auto-expand textarea
@@ -98,7 +136,6 @@ function initUI() {
       }
     });
 
-    // Auto focus
     setTimeout(() => promptInput.focus(), 150);
   }
 
@@ -107,9 +144,25 @@ function initUI() {
     sendBtn.addEventListener("click", () => handleSubmit());
   }
 
-  // New Chat
+  // New Chat button
   if (newChatBtn) {
     newChatBtn.addEventListener("click", () => startNewSession());
+  }
+
+  // Refresh Sessions button
+  if (refreshSessionsBtn) {
+    refreshSessionsBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      fetchSessions();
+    });
+  }
+
+  // Sidebar Collapse / Expand
+  if (sidebarCollapseBtn) {
+    sidebarCollapseBtn.addEventListener("click", () => toggleSidebar(false));
+  }
+  if (sidebarExpandBtn) {
+    sidebarExpandBtn.addEventListener("click", () => toggleSidebar(true));
   }
 
   // Routing Mode Toggle
@@ -140,7 +193,6 @@ function initUI() {
       pendingActionIds = [];
     });
   }
-
 
   // Voice Toggle Button
   if (voiceToggleBtn) {
@@ -174,7 +226,7 @@ function initUI() {
           body: JSON.stringify({ model_name: selected })
         });
         await res.json();
-        if (label) label.textContent = "VRAM Cleared! ✓";
+        if (label) label.textContent = "VRAM Cleared!";
         setTimeout(() => {
           if (label) label.textContent = "Free VRAM";
           unloadModelBtn.style.opacity = "1";
@@ -190,7 +242,7 @@ function initUI() {
     });
   }
 
-  // --- Governor Command Panel & Overrides ---
+  // Governor Command Panel Toggle
   if (governorPill && governorWidgetContainer) {
     governorPill.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -200,14 +252,12 @@ function initUI() {
       }
     });
 
-    // Close panel on click outside
     document.addEventListener("click", (e) => {
       if (governorWidgetContainer.classList.contains("open") && !governorWidgetContainer.contains(e.target)) {
         governorWidgetContainer.classList.remove("open");
       }
     });
 
-    // Prevent clicks inside panel from closing it
     if (governorCommandPanel) {
       governorCommandPanel.addEventListener("click", (e) => e.stopPropagation());
     }
@@ -304,14 +354,22 @@ function initUI() {
   // Quick Skills
   if (skillReviewBtn) {
     skillReviewBtn.addEventListener("click", () => {
-      if (promptInput) promptInput.value = "Please review the code in backend/app/main.py for quality and security.";
+      if (promptInput) promptInput.value = "Review the codebase files in backend/app for quality, reliability, and security.";
       handleSubmit();
     });
   }
   if (skillDiagBtn) {
     skillDiagBtn.addEventListener("click", () => {
-      if (promptInput) promptInput.value = "Check system diagnostics, disk usage, and hardware telemetry.";
+      if (promptInput) promptInput.value = "Check system diagnostics, disk usage, and hardware telemetry stats.";
       handleSubmit();
+    });
+  }
+  if (skillWebSearchBtn) {
+    skillWebSearchBtn.addEventListener("click", () => {
+      if (promptInput) {
+        promptInput.value = "Search the web for the latest updates on ";
+        promptInput.focus();
+      }
     });
   }
 
@@ -327,7 +385,51 @@ function initUI() {
   });
 }
 
-// --- Submit Query Handler ---
+function initKeyShortcuts() {
+  document.addEventListener("keydown", (e) => {
+    // Ctrl+B: Toggle Sidebar
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") {
+      e.preventDefault();
+      const isCollapsed = sidebar && sidebar.classList.contains("collapsed");
+      toggleSidebar(isCollapsed);
+    }
+    // Alt+G: Toggle Governor
+    else if (e.altKey && e.key.toLowerCase() === "g") {
+      e.preventDefault();
+      if (governorWidgetContainer) {
+        const isOpen = governorWidgetContainer.classList.toggle("open");
+        if (isOpen) fetchGovernorHistory();
+      }
+    }
+    // Ctrl+N: New Chat
+    else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
+      e.preventDefault();
+      startNewSession();
+    }
+    // Escape: Close Governor or Confirmation
+    else if (e.key === "Escape") {
+      if (governorWidgetContainer && governorWidgetContainer.classList.contains("open")) {
+        governorWidgetContainer.classList.remove("open");
+      }
+      if (confirmationPanel && confirmationPanel.style.display !== "none") {
+        confirmationPanel.style.display = "none";
+      }
+    }
+  });
+}
+
+function toggleSidebar(expand) {
+  if (!sidebar) return;
+  if (expand) {
+    sidebar.classList.remove("collapsed");
+    if (sidebarExpandBtn) sidebarExpandBtn.style.display = "none";
+  } else {
+    sidebar.classList.add("collapsed");
+    if (sidebarExpandBtn) sidebarExpandBtn.style.display = "flex";
+  }
+}
+
+// --- Submit Query Handler with Live SSE Streaming ---
 async function handleSubmit(approvedTokens = null) {
   const query = promptInput ? promptInput.value.trim() : "";
   if (!query && !approvedTokens) return;
@@ -347,10 +449,9 @@ async function handleSubmit(approvedTokens = null) {
     }
   }
 
-  if (loadingBubble) loadingBubble.style.display = "flex";
-  if (chatViewport) chatViewport.scrollTop = chatViewport.scrollHeight;
+  if (loadingBubble) loadingBubble.style.display = "none";
 
-  const selectedModel = modelSelect ? modelSelect.value : "hermes3:8b";
+  const selectedModel = modelSelect ? modelSelect.value : "prism-ml/bonsai-27b";
   const isHeavy = selectedModel === "heavy";
 
   const payload = {
@@ -362,11 +463,17 @@ async function handleSubmit(approvedTokens = null) {
     approved_action_ids: approvedTokens
   };
 
+  const streamMessage = createStreamingAssistantMessage();
+  let accumulatedText = "";
+  let toolsUsed = [];
+  let activeSkills = [];
+  let modelName = selectedModel;
+
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 180000); // 180s safety timeout for deep reasoning
+  const timeoutId = setTimeout(() => controller.abort(), 180000);
 
   try {
-    const response = await fetch(`${API_BASE}/chat`, {
+    const response = await fetch(`${API_BASE}/chat/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -374,41 +481,126 @@ async function handleSubmit(approvedTokens = null) {
     });
 
     clearTimeout(timeoutId);
-    if (loadingBubble) loadingBubble.style.display = "none";
 
     if (response.status === 429) {
       const err = await response.json();
-      appendAssistantMessage(`⚠️ **Resource Governor Throttled**: ${err.detail || "System under high load."}`);
+      streamMessage.finalizeText(`Resource Governor Throttled: ${err.detail || "System under high load."}`);
+      return;
+    }
+
+    if (response.status === 404) {
+      // Graceful fallback to standard /chat endpoint if streaming endpoint is unavailable
+      const fallbackRes = await fetch(`${API_BASE}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+      if (!fallbackRes.ok) {
+        const err = await fallbackRes.text();
+        streamMessage.finalizeText(`Error: ${err}`);
+        return;
+      }
+      const data = await fallbackRes.json();
+      if (data.status === "confirmation_required") {
+        streamMessage.remove();
+        showConfirmationPrompt(data);
+        if (isVoiceReplyEnabled) {
+          speakText("Confirmation required before executing the requested system action.");
+        }
+      } else {
+        streamMessage.finalize(data.response, data.tools_used, data.active_skills, data.model);
+        if (isVoiceReplyEnabled && data.response) {
+          speakText(data.response);
+        }
+        fetchSessions();
+      }
       return;
     }
 
     if (!response.ok) {
       const err = await response.text();
-      appendAssistantMessage(`❌ **Error**: ${err}`);
+      streamMessage.finalizeText(`Error: ${err}`);
       return;
     }
 
-    const data = await response.json();
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
 
-    if (data.status === "confirmation_required") {
-      showConfirmationPrompt(data);
-      if (isVoiceReplyEnabled) {
-        speakText("Confirmation required before executing the requested system action.");
-      }
-    } else {
-      appendAssistantMessage(data.response, data.tools_used, data.active_skills, data.model);
-      if (isVoiceReplyEnabled) {
-        speakText(data.response);
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split("\n\n");
+      buffer = blocks.pop() || "";
+
+      for (const block of blocks) {
+        if (!block.trim()) continue;
+        const eventLines = block.split("\n");
+        let eventType = "message";
+        let eventData = "";
+
+        for (const line of eventLines) {
+          if (line.startsWith("event: ")) {
+            eventType = line.substring(7).trim();
+          } else if (line.startsWith("data: ")) {
+            eventData = line.substring(6).trim();
+          }
+        }
+
+        if (!eventData) continue;
+
+        let parsedData = {};
+        try {
+          parsedData = JSON.parse(eventData);
+        } catch {
+          parsedData = { text: eventData };
+        }
+
+        if (eventType === "token") {
+          const delta = parsedData.delta || "";
+          accumulatedText += delta;
+          streamMessage.updateText(accumulatedText);
+        } else if (eventType === "tool_start") {
+          streamMessage.addOrUpdateToolStep(parsedData.tool, parsedData.args, "running", null);
+        } else if (eventType === "tool_end") {
+          toolsUsed.push(parsedData);
+          streamMessage.addOrUpdateToolStep(parsedData.tool, parsedData.args, parsedData.status, parsedData.result);
+        } else if (eventType === "confirmation_required") {
+          streamMessage.remove();
+          showConfirmationPrompt(parsedData);
+          if (isVoiceReplyEnabled) {
+            speakText("Confirmation required before executing the requested system action.");
+          }
+          return;
+        } else if (eventType === "done") {
+          if (parsedData.response && parsedData.response.length > accumulatedText.length) {
+            accumulatedText = parsedData.response;
+          }
+          toolsUsed = parsedData.tools_used || toolsUsed;
+          activeSkills = parsedData.active_skills || [];
+          modelName = parsedData.model || selectedModel;
+        } else if (eventType === "error") {
+          accumulatedText += `\n\nError: ${parsedData.error}`;
+          streamMessage.updateText(accumulatedText);
+        }
       }
     }
 
+    streamMessage.finalize(accumulatedText, toolsUsed, activeSkills, modelName);
+    if (isVoiceReplyEnabled && accumulatedText) {
+      speakText(accumulatedText);
+    }
+    fetchSessions();
+
   } catch (err) {
     clearTimeout(timeoutId);
-    if (loadingBubble) loadingBubble.style.display = "none";
     if (err.name === "AbortError") {
-      appendAssistantMessage(`⏱️ **Timeout**: Jarvis took too long to respond. The system may be busy.`);
+      streamMessage.finalizeText(`Timeout: Jarvis took too long to respond. The system may be busy.`);
     } else {
-      appendAssistantMessage(`❌ **Connection Error**: Could not reach backend API at ${API_BASE}. Make sure Jarvis backend is running.`);
+      streamMessage.finalizeText(`Connection Error: Could not reach backend API at ${API_BASE}. Make sure Jarvis backend is running.`);
     }
   } finally {
     isProcessing = false;
@@ -418,10 +610,93 @@ async function handleSubmit(approvedTokens = null) {
   }
 }
 
+function createStreamingAssistantMessage() {
+  if (!messagesContainer) return { updateText() {}, addOrUpdateToolStep() {}, finalizeText() {}, finalize() {}, remove() {} };
+  const row = document.createElement("div");
+  row.className = "msg-row assistant";
+
+  const bubble = document.createElement("div");
+  bubble.className = "msg-bubble";
+  bubble.innerHTML = `<div class="streaming-text-container"><span class="streaming-cursor"></span></div><div class="tool-step-container"></div>`;
+
+  row.appendChild(bubble);
+  messagesContainer.appendChild(row);
+  if (chatViewport) chatViewport.scrollTop = chatViewport.scrollHeight;
+
+  const textContainer = bubble.querySelector(".streaming-text-container");
+  const toolContainer = bubble.querySelector(".tool-step-container");
+  const activeToolCards = new Map();
+
+  return {
+    updateText(rawText) {
+      if (textContainer) {
+        textContainer.innerHTML = renderMarkdownToHtml(rawText) + `<span class="streaming-cursor"></span>`;
+        if (chatViewport) chatViewport.scrollTop = chatViewport.scrollHeight;
+      }
+    },
+    addOrUpdateToolStep(toolName, args, status, result) {
+      if (!toolContainer) return;
+      let card = activeToolCards.get(toolName);
+      if (!card) {
+        card = createToolStepCard({ tool: toolName, args: args, status: status, result: result });
+        toolContainer.appendChild(card);
+        activeToolCards.set(toolName, card);
+      } else {
+        const pill = card.querySelector(".step-status-pill");
+        if (pill) {
+          const isSuccess = status !== "error";
+          pill.className = `step-status-pill ${isSuccess ? "success" : "error"}`;
+          pill.textContent = isSuccess ? "Success" : "Failed";
+        }
+        if (result) {
+          const body = card.querySelector(".tool-step-body");
+          if (body) {
+            body.innerHTML = `<div><strong>Result:</strong><pre style="margin-top:4px; white-space:pre-wrap;">${escapeHtml(typeof result === 'string' ? result : JSON.stringify(result, null, 2))}</pre></div>`;
+          }
+        }
+      }
+      if (chatViewport) chatViewport.scrollTop = chatViewport.scrollHeight;
+    },
+    finalizeText(errorText) {
+      if (textContainer) {
+        textContainer.innerHTML = renderMarkdownToHtml(errorText);
+      }
+    },
+    finalize(finalText, tools, activeSkills, model) {
+      if (textContainer) {
+        textContainer.innerHTML = renderMarkdownToHtml(finalText);
+      }
+
+      const actionsBar = document.createElement("div");
+      actionsBar.className = "msg-actions-bar";
+
+      if (activeSkills && activeSkills.length > 0) {
+        const tag = document.createElement("div");
+        tag.className = "tier-badge tier-badge--1";
+        tag.innerHTML = `<i class="ti ti-sparkles"></i> ${escapeHtml(activeSkills.join(", "))}`;
+        actionsBar.appendChild(tag);
+      }
+
+      const readBtn = document.createElement("button");
+      readBtn.className = "read-aloud-btn";
+      readBtn.innerHTML = `<i class="ti ti-volume"></i> Read Aloud`;
+      readBtn.addEventListener("click", () => speakText(finalText));
+      actionsBar.appendChild(readBtn);
+
+      bubble.appendChild(actionsBar);
+
+      enhanceCodeBlocks(bubble);
+      if (chatViewport) chatViewport.scrollTop = chatViewport.scrollHeight;
+    },
+    remove() {
+      row.remove();
+    }
+  };
+}
+
 // --- Mode & Model Controls ---
 function setChatMode(mode, fromUserClick = false) {
   if (isConversationStarted && fromUserClick) {
-    // Mode is locked for active conversation
     const alertMsg = "Mode is locked for the current chat session. Start a 'New Chat' to switch mode.";
     if (window.confirm ? confirm(alertMsg + "\n\nWould you like to start a new chat now?") : false) {
       startNewSession();
@@ -437,15 +712,15 @@ function setChatMode(mode, fromUserClick = false) {
     if (modeSystemBtn) modeSystemBtn.classList.remove("mode-toggle__option--active");
     if (activeProjectIndicator) activeProjectIndicator.style.display = "flex";
     if (emptyStateTitle) emptyStateTitle.textContent = "Working in " + (activeProjectName ? activeProjectName.textContent : "JARVIS core");
-    if (emptyStateSubtitle) emptyStateSubtitle.textContent = "Workspace mode — writes stay inside this folder";
-    if (suggWorkspaceCard) suggWorkspaceCard.style.display = "block";
+    if (emptyStateSubtitle) emptyStateSubtitle.textContent = "Workspace mode - writes stay inside this project folder";
+    if (suggWorkspaceCard) suggWorkspaceCard.style.display = "flex";
     if (sessionGroupHeader) sessionGroupHeader.textContent = "Workspace Chats";
   } else {
     if (modeSystemBtn) modeSystemBtn.classList.add("mode-toggle__option--active");
     if (modeWorkspaceBtn) modeWorkspaceBtn.classList.remove("mode-toggle__option--active");
     if (activeProjectIndicator) activeProjectIndicator.style.display = "none";
-    if (emptyStateTitle) emptyStateTitle.textContent = "System mode";
-    if (emptyStateSubtitle) emptyStateSubtitle.textContent = "Full PC access — confirmation required outside safe paths";
+    if (emptyStateTitle) emptyStateTitle.textContent = "System Mode Active";
+    if (emptyStateSubtitle) emptyStateSubtitle.textContent = "Full PC access - confirmation required outside safe workspace paths";
     if (suggWorkspaceCard) suggWorkspaceCard.style.display = "none";
     if (sessionGroupHeader) sessionGroupHeader.textContent = "System Chats";
   }
@@ -456,25 +731,12 @@ function updateModelTierBadge() {
 
   const val = modelSelect.value;
   if (val === "qwen2.5:0.5b") {
-    if (activeModelName) activeModelName.textContent = "Qwen 2.5 0.5B";
     activeTierBadge.className = "tier-badge tier-badge--1";
     activeTierBadge.textContent = "Tier 1 · fast";
   } else if (val === "heavy") {
-    if (activeModelName) activeModelName.textContent = "Cloud LLM";
     activeTierBadge.className = "tier-badge tier-badge--3";
     activeTierBadge.textContent = "Tier 3 · cloud";
   } else {
-    // Local Tier 2 flagship models
-    const nameMap = {
-      "prism-ml/bonsai-27b": "Bonsai 27B",
-      "bonsai-27b": "Bonsai 27B",
-      "qwen3.8-9b-distill": "Qwen 3.8 9B Distill",
-      "hermes3:8b": "Hermes 3 8B",
-      "phi3.5:3.8b": "Phi 3.5 3.8B",
-      "llama3.1:8b": "Llama 3.1 8B",
-      "llama3.2:3b": "Llama 3.2 3B"
-    };
-    if (activeModelName) activeModelName.textContent = nameMap[val] || val;
     activeTierBadge.className = "tier-badge tier-badge--2";
     activeTierBadge.textContent = "Tier 2 · local";
   }
@@ -498,9 +760,11 @@ function updateVoiceButtonUI() {
   const textEl = voiceToggleBtn.querySelector(".voice-text");
   if (isVoiceReplyEnabled) {
     voiceToggleBtn.classList.add("active");
+    if (voiceToggleIcon) voiceToggleIcon.className = "ti ti-volume voice-icon";
     if (textEl) textEl.textContent = "Voice: ON";
   } else {
     voiceToggleBtn.classList.remove("active");
+    if (voiceToggleIcon) voiceToggleIcon.className = "ti ti-volume-off voice-icon";
     if (textEl) textEl.textContent = "Voice: OFF";
     if (window.speechSynthesis) window.speechSynthesis.cancel();
     if (currentAudio) {
@@ -509,7 +773,6 @@ function updateVoiceButtonUI() {
     }
   }
 }
-
 
 function cycleRoutingMode() {
   const modes = ["auto", "normal", "heavy"];
@@ -530,26 +793,180 @@ function startNewSession() {
   if (loadingBubble) loadingBubble.style.display = "none";
 
   setChatMode(currentMode, false);
-
-  if (sessionsList) {
-    const item = document.createElement("div");
-    item.className = "session-item active";
-    item.innerHTML = `<span class="session-icon">💬</span><span class="session-name">${currentMode === "WORKSPACE" ? "📁" : "💻"} Chat ${activeSessionId.substring(8)}</span>`;
-    
-    document.querySelectorAll(".session-item").forEach(el => el.classList.remove("active"));
-    sessionsList.prepend(item);
-
-    item.addEventListener("click", () => {
-      document.querySelectorAll(".session-item").forEach(el => el.classList.remove("active"));
-      item.classList.add("active");
-    });
-  }
+  fetchSessions();
 
   if (promptInput) promptInput.focus();
 }
 
-// --- Message Rendering ---
+// --- Session Drawer & History Management ---
+async function fetchSessions() {
+  if (!sessionsList) return;
+  try {
+    const res = await fetch(`${API_BASE}/sessions`);
+    if (!res.ok) return;
+    const sessions = await res.json();
 
+    sessionsList.innerHTML = "";
+
+    if (!Array.isArray(sessions) || sessions.length === 0) {
+      const defaultItem = document.createElement("div");
+      defaultItem.className = "session-item active";
+      defaultItem.innerHTML = `
+        <i class="ti ti-message-2 session-icon"></i>
+        <span class="session-name">Current Session</span>
+      `;
+      sessionsList.appendChild(defaultItem);
+      return;
+    }
+
+    sessions.forEach(sess => {
+      const sId = sess.session_id || sess.id || sess;
+      const title = sess.title || `Chat ${sId.substring(0, 8)}`;
+      const isActive = sId === activeSessionId;
+
+      const item = document.createElement("div");
+      item.className = `session-item ${isActive ? "active" : ""}`;
+      item.setAttribute("data-session-id", sId);
+      item.innerHTML = `
+        <i class="ti ti-message-2 session-icon"></i>
+        <span class="session-name" title="${title}">${title}</span>
+        <button class="session-delete-btn" title="Delete Session">
+          <i class="ti ti-trash"></i>
+        </button>
+      `;
+
+      item.addEventListener("click", () => {
+        loadSession(sId);
+      });
+
+      const delBtn = item.querySelector(".session-delete-btn");
+      if (delBtn) {
+        delBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          deleteSession(sId, item);
+        });
+      }
+
+      sessionsList.appendChild(item);
+    });
+
+  } catch (err) {
+    console.debug("Error fetching sessions:", err);
+  }
+}
+
+async function loadSession(sessionId) {
+  if (isProcessing) return;
+  activeSessionId = sessionId;
+  isConversationStarted = true;
+
+  document.querySelectorAll(".session-item").forEach(el => {
+    if (el.getAttribute("data-session-id") === sessionId) {
+      el.classList.add("active");
+    } else {
+      el.classList.remove("active");
+    }
+  });
+
+  if (welcomeHero) welcomeHero.style.display = "none";
+  if (confirmationPanel) confirmationPanel.style.display = "none";
+  if (messagesContainer) messagesContainer.innerHTML = "";
+  if (loadingBubble) loadingBubble.style.display = "flex";
+
+  try {
+    const res = await fetch(`${API_BASE}/sessions/${sessionId}/messages`);
+    if (loadingBubble) loadingBubble.style.display = "none";
+
+    if (!res.ok) {
+      appendAssistantMessage(`Could not load messages for session ${sessionId}.`);
+      return;
+    }
+
+    const messages = await res.json();
+    if (!Array.isArray(messages) || messages.length === 0) {
+      if (welcomeHero) welcomeHero.style.display = "flex";
+      return;
+    }
+
+    messages.forEach(msg => {
+      const role = msg.role || "user";
+      const content = msg.content || "";
+      const toolsUsed = msg.tools_used || (msg.metadata ? msg.metadata.tools_used : []);
+      const activeSkills = msg.active_skills || (msg.metadata ? msg.metadata.active_skills : []);
+      const model = msg.model || (msg.metadata ? msg.metadata.model : "");
+
+      if (role === "user") {
+        appendUserMessage(content);
+      } else {
+        appendAssistantMessage(content, toolsUsed, activeSkills, model);
+      }
+    });
+
+  } catch (err) {
+    if (loadingBubble) loadingBubble.style.display = "none";
+    appendAssistantMessage(`Error loading session history: ${err}`);
+  }
+}
+
+async function deleteSession(sessionId, element) {
+  if (window.confirm ? !confirm("Are you sure you want to delete this session?") : false) {
+    return;
+  }
+  try {
+    await fetch(`${API_BASE}/sessions/${sessionId}`, { method: "DELETE" });
+    if (element) {
+      element.style.opacity = "0";
+      setTimeout(() => element.remove(), 200);
+    }
+    if (activeSessionId === sessionId) {
+      startNewSession();
+    }
+  } catch (err) {
+    console.error("Error deleting session:", err);
+  }
+}
+
+// --- Dynamic Models & Skills Discovery ---
+async function fetchModelsAndSkills() {
+  try {
+    const res = await fetch(`${API_BASE}/health`);
+    if (!res.ok) return;
+    const data = await res.json();
+
+    // 1. Update Models Dropdown
+    if (modelSelect && Array.isArray(data.available_models) && data.available_models.length > 0) {
+      const currentVal = modelSelect.value;
+      const heavyOpt = '<option value="heavy">Heavy Mode (OpenRouter)</option>';
+      
+      const opts = data.available_models.map(m => {
+        let label = m;
+        if (m.includes("bonsai")) label = "Bonsai 27B (LM Studio)";
+        else if (m.includes("hermes")) label = "Hermes 3 8B (Ollama)";
+        else if (m.includes("qwen2.5:0.5b")) label = "Qwen 2.5 0.5B (Ollama)";
+        else if (m.includes("qwen3.8")) label = "Qwen 3.8 9B (LM Studio)";
+        return `<option value="${m}">${label}</option>`;
+      }).join("") + heavyOpt;
+
+      modelSelect.innerHTML = opts;
+      if (data.available_models.includes(currentVal) || currentVal === "heavy") {
+        modelSelect.value = currentVal;
+      } else if (data.configured_model && data.available_models.includes(data.configured_model)) {
+        modelSelect.value = data.configured_model;
+      }
+      updateModelTierBadge();
+    }
+
+    // 2. Update Skills Count Badge
+    if (skillsCountBadge && data.available_skills_count !== undefined) {
+      skillsCountBadge.textContent = `${data.available_skills_count} Active`;
+    }
+
+  } catch (err) {
+    console.debug("Error loading health models/skills:", err);
+  }
+}
+
+// --- Message Rendering Engine ---
 function appendUserMessage(text) {
   if (!messagesContainer) return;
   const row = document.createElement("div");
@@ -571,64 +988,174 @@ function appendAssistantMessage(text, toolsUsed = [], activeSkills = [], modelNa
 
   const bubble = document.createElement("div");
   bubble.className = "msg-bubble";
-  bubble.innerHTML = formatMarkdownText(text);
+  bubble.innerHTML = renderMarkdownToHtml(text);
 
+  // Render Collapsible Tool Execution Steps
+  if (toolsUsed && toolsUsed.length > 0) {
+    const toolsContainer = document.createElement("div");
+    toolsContainer.className = "tool-step-container";
+
+    toolsUsed.forEach(t => {
+      const stepCard = createToolStepCard(t);
+      toolsContainer.appendChild(stepCard);
+    });
+
+    bubble.appendChild(toolsContainer);
+  }
+
+  // Actions Bar
   const actionsBar = document.createElement("div");
-  actionsBar.style.display = "flex";
-  actionsBar.style.alignItems = "center";
-  actionsBar.style.flexWrap = "wrap";
-  actionsBar.style.gap = "6px";
-  actionsBar.style.marginTop = "6px";
+  actionsBar.className = "msg-actions-bar";
 
   if (activeSkills && activeSkills.length > 0) {
     const tag = document.createElement("div");
-    tag.className = "tool-badge";
-    tag.textContent = `🎯 Skill: ${activeSkills.join(", ")}`;
+    tag.className = "tier-badge tier-badge--1";
+    tag.innerHTML = `<i class="ti ti-sparkles"></i> ${escapeHtml(activeSkills.join(", "))}`;
     actionsBar.appendChild(tag);
-  }
-
-  if (toolsUsed && toolsUsed.length > 0) {
-    toolsUsed.forEach(t => {
-      const tag = document.createElement("div");
-      tag.className = "tool-badge";
-      tag.textContent = `⚡ Executed: ${t.tool}`;
-      actionsBar.appendChild(tag);
-    });
   }
 
   // Read Aloud button
   const readBtn = document.createElement("button");
   readBtn.className = "read-aloud-btn";
-  readBtn.innerHTML = "🔊 Read Aloud";
+  readBtn.innerHTML = `<i class="ti ti-volume"></i> Read Aloud`;
   readBtn.addEventListener("click", () => speakText(text));
   actionsBar.appendChild(readBtn);
 
   bubble.appendChild(actionsBar);
   row.appendChild(bubble);
   messagesContainer.appendChild(row);
+
+  // Post-render syntax highlighting & copy listeners
+  enhanceCodeBlocks(bubble);
+
   if (chatViewport) chatViewport.scrollTop = chatViewport.scrollHeight;
 }
 
-function formatMarkdownText(text) {
+function createToolStepCard(toolItem) {
+  const card = document.createElement("div");
+  card.className = "tool-step-card";
+
+  const toolName = toolItem.tool || "tool_execution";
+  let iconClass = "ti-tool";
+  if (toolName.includes("search") || toolName.includes("fetch")) iconClass = "ti-world-search";
+  else if (toolName.includes("file") || toolName.includes("read") || toolName.includes("write")) iconClass = "ti-file-code";
+  else if (toolName.includes("command") || toolName.includes("powershell")) iconClass = "ti-terminal-2";
+  else if (toolName.includes("diagnostics") || toolName.includes("status")) iconClass = "ti-activity";
+
+  const argsObj = toolItem.args || {};
+  let argsPreview = "";
+  if (argsObj.query) argsPreview = `query: "${argsObj.query}"`;
+  else if (argsObj.file_path) argsPreview = `path: "${argsObj.file_path}"`;
+  else if (argsObj.command) argsPreview = `cmd: "${argsObj.command}"`;
+  else if (Object.keys(argsObj).length > 0) argsPreview = JSON.stringify(argsObj);
+
+  const isSuccess = toolItem.status !== "error";
+  const statusLabel = isSuccess ? "Success" : "Failed";
+  const statusClass = isSuccess ? "success" : "error";
+
+  card.innerHTML = `
+    <div class="tool-step-header">
+      <div class="tool-step-left">
+        <i class="ti ${iconClass} tool-step-icon"></i>
+        <span class="tool-step-name">${escapeHtml(toolName)}</span>
+        ${argsPreview ? `<span class="tool-step-args-preview">${escapeHtml(argsPreview)}</span>` : ""}
+      </div>
+      <div class="tool-step-right">
+        <span class="step-status-pill ${statusClass}">${statusLabel}</span>
+        <i class="ti ti-chevron-down step-chevron"></i>
+      </div>
+    </div>
+    <div class="tool-step-body">
+      ${toolItem.result ? `<div><strong>Result:</strong><pre style="margin-top:4px; white-space:pre-wrap;">${escapeHtml(typeof toolItem.result === 'string' ? toolItem.result : JSON.stringify(toolItem.result, null, 2))}</pre></div>` : `<div>Arguments: ${escapeHtml(JSON.stringify(argsObj, null, 2))}</div>`}
+    </div>
+  `;
+
+  const header = card.querySelector(".tool-step-header");
+  if (header) {
+    header.addEventListener("click", () => {
+      card.classList.toggle("open");
+    });
+  }
+
+  return card;
+}
+
+function renderMarkdownToHtml(text) {
   if (!text) return "";
-  let formatted = text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  if (window.marked) {
+    try {
+      return marked.parse(text);
+    } catch {
+      // Fallback to basic sanitization
+    }
+  }
+  return fallbackFormatMarkdown(text);
+}
 
-  // Code blocks
-  formatted = formatted.replace(/```([\w]*)\n([\s\S]*?)```/g, (match, lang, code) => {
-    return `<pre style="background:#07090e; padding:12px; border-radius:8px; margin:8px 0; overflow-x:auto; font-family:var(--font-mono); font-size:13px;"><code>${code}</code></pre>`;
-  });
-
-  // Inline code
-  formatted = formatted.replace(/`([^`]+)`/g, '<code style="background:#07090e; padding:2px 6px; border-radius:4px; font-family:var(--font-mono); font-size:12.5px;">$1</code>');
-  // Bold
+function fallbackFormatMarkdown(text) {
+  let formatted = escapeHtml(text);
+  formatted = formatted.replace(/```([\w]*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+  formatted = formatted.replace(/`([^`]+)`/g, '<code>$1</code>');
   formatted = formatted.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  // Line breaks
   formatted = formatted.replace(/\n/g, '<br>');
-
   return formatted;
+}
+
+function enhanceCodeBlocks(container) {
+  const preElements = container.querySelectorAll("pre");
+  preElements.forEach(pre => {
+    if (pre.closest(".code-block-wrapper") || pre.closest(".conf-payload-box")) return;
+
+    const codeEl = pre.querySelector("code");
+    const rawCode = codeEl ? codeEl.textContent : pre.textContent;
+
+    // Detect language class
+    let lang = "plaintext";
+    if (codeEl) {
+      const classes = Array.from(codeEl.classList);
+      const langClass = classes.find(c => c.startsWith("language-"));
+      if (langClass) {
+        lang = langClass.replace("language-", "");
+      }
+    }
+
+    const wrapper = document.createElement("div");
+    wrapper.className = "code-block-wrapper";
+
+    const header = document.createElement("div");
+    header.className = "code-header";
+    header.innerHTML = `
+      <span>${escapeHtml(lang)}</span>
+      <button class="copy-code-btn" title="Copy code to clipboard">
+        <i class="ti ti-copy"></i>
+        <span>Copy</span>
+      </button>
+    `;
+
+    const copyBtn = header.querySelector(".copy-code-btn");
+    copyBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(rawCode);
+        copyBtn.classList.add("copied");
+        copyBtn.innerHTML = `<i class="ti ti-check"></i> <span>Copied!</span>`;
+        setTimeout(() => {
+          copyBtn.classList.remove("copied");
+          copyBtn.innerHTML = `<i class="ti ti-copy"></i> <span>Copy</span>`;
+        }, 2000);
+      } catch (e) {
+        console.error("Clipboard copy error:", e);
+      }
+    });
+
+    pre.parentNode.insertBefore(wrapper, pre);
+    wrapper.appendChild(header);
+    wrapper.appendChild(pre);
+
+    // Apply Prism syntax highlighting
+    if (window.Prism && codeEl) {
+      Prism.highlightElement(codeEl);
+    }
+  });
 }
 
 // --- Safety Confirmation UI ---
@@ -638,7 +1165,7 @@ function showConfirmationPrompt(data) {
   const cardsHtml = (data.pending_confirmations || []).map(p => {
     const isHigh = p.risk_tier === "HIGH_RISK";
     const badgeClass = isHigh ? "conf-risk-badge high" : "conf-risk-badge confirm";
-    const toolIcon = p.tool.includes("command") ? "⚡" : p.tool.includes("write") ? "📝" : p.tool.includes("delete") ? "🗑️" : "🔧";
+    const toolIcon = p.tool.includes("command") ? "ti-terminal-2" : p.tool.includes("write") ? "ti-edit" : p.tool.includes("delete") ? "ti-trash" : "ti-tool";
     
     let payloadHtml = "";
     if (p.args && p.args.command) {
@@ -664,12 +1191,12 @@ function showConfirmationPrompt(data) {
       `;
     }
 
-    const reasonHtml = p.reason ? `<div class="conf-reason-text">ℹ️ ${escapeHtml(p.reason)}</div>` : "";
+    const reasonHtml = p.reason ? `<div class="conf-reason-text">${escapeHtml(p.reason)}</div>` : "";
 
     return `
       <div class="conf-action-card">
         <div class="conf-action-header">
-          <span class="conf-tool-name">${toolIcon} ${escapeHtml(p.tool)}</span>
+          <span class="conf-tool-name"><i class="ti ${toolIcon}"></i> ${escapeHtml(p.tool)}</span>
           <span class="${badgeClass}">${escapeHtml(p.risk_tier)}</span>
         </div>
         ${payloadHtml}
@@ -680,7 +1207,7 @@ function showConfirmationPrompt(data) {
 
   if (confDetailsText) {
     confDetailsText.innerHTML = `
-      <div>Jarvis wants to execute the following operation(s) on your system:</div>
+      <div>Jarvis requests authorization to perform the following system operation(s):</div>
       <div style="display:flex; flex-direction:column; gap:10px; margin-top:8px;">${cardsHtml}</div>
     `;
   }
@@ -715,7 +1242,6 @@ function sanitizeForSpeech(text) {
     .replace(/[*_]{1,3}([^*_]+)[*_]{1,3}/g, "$1")
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
     .replace(/^#{1,6}\s+/gm, "")
-    .replace(/[•⚡🎯📝⚠️📊🔍💬✓]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -724,7 +1250,6 @@ async function speakText(text) {
   const clean = sanitizeForSpeech(text);
   if (!clean) return;
 
-  // Stop any currently playing audio
   if (currentAudio) {
     currentAudio.pause();
     currentAudio = null;
@@ -733,7 +1258,7 @@ async function speakText(text) {
     window.speechSynthesis.cancel();
   }
 
-  // 1. Try Local Voice Output via Jarvis Backend (/voice/speak)
+  // 1. Local Voice Output via backend (/voice/speak)
   try {
     const res = await fetch(`${API_BASE}/voice/speak`, {
       method: "POST",
@@ -796,7 +1321,7 @@ async function startVoiceRecording() {
   audioChunks = [];
   let speechRecognizedText = "";
 
-  // 1. Start live browser speech preview if available
+  // 1. Live browser speech preview
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (SpeechRecognition) {
     try {
@@ -824,7 +1349,7 @@ async function startVoiceRecording() {
     }
   }
 
-  // 2. Start robust MediaRecorder stream for backend Whisper
+  // 2. MediaRecorder stream for backend Whisper
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     mediaRecorder = new MediaRecorder(stream);
@@ -838,10 +1363,9 @@ async function startVoiceRecording() {
     mediaRecorder.onstop = async () => {
       isRecording = false;
       if (micBtn) micBtn.classList.remove("recording");
-      if (promptInput) promptInput.placeholder = "Ask Jarvis anything, or use / for skills...";
+      if (promptInput) promptInput.placeholder = "Message Jarvis, or ask to execute tools...";
       stream.getTracks().forEach(track => track.stop());
 
-      // If live Web Speech got text, use it; otherwise send recorded audio to local Whisper
       if (speechRecognizedText && speechRecognizedText.trim().length > 1) {
         if (promptInput) promptInput.value = speechRecognizedText.trim();
         handleSubmit();
@@ -857,7 +1381,7 @@ async function startVoiceRecording() {
     console.error("Microphone capture error:", err);
     isRecording = false;
     if (micBtn) micBtn.classList.remove("recording");
-    if (promptInput) promptInput.placeholder = "Ask Jarvis anything, or use / for skills...";
+    if (promptInput) promptInput.placeholder = "Message Jarvis, or ask to execute tools...";
   }
 }
 
@@ -913,8 +1437,7 @@ async function sendAudioToBackendTranscribe(blob) {
   }
 }
 
-
-// --- Telemetry Poller ---
+// --- Telemetry Poller & Visualizers ---
 function initTelemetry() {
   setInterval(pollGovernor, 2000);
   pollGovernor();
@@ -932,7 +1455,7 @@ async function pollGovernor() {
         statusDot.className = (st === "PAUSED" || st === "UNLOADED" || st === "ERROR") ? "status-dot throttled" : "status-dot connected";
       }
       if (statusText) {
-        if (st === "PAUSED") statusText.textContent = "Paused (External App/Manual)";
+        if (st === "PAUSED") statusText.textContent = "Paused (Manual)";
         else if (st === "UNLOADED") statusText.textContent = "VRAM Unloaded";
         else if (st === "ERROR") statusText.textContent = "Governor Error";
         else if (st === "LOADING") statusText.textContent = "Loading Model...";
@@ -940,7 +1463,7 @@ async function pollGovernor() {
         else statusText.textContent = "Jarvis Ready";
       }
 
-      // Update Governor Pill 6-Tier Class & Arc Ring
+      // Update Governor Pill & Arc Ring
       if (governorPill) {
         governorPill.className = "governor-pill";
         if (st === "IDLE") governorPill.classList.add("governor-pill--idle");
@@ -951,7 +1474,6 @@ async function pollGovernor() {
         else if (st === "ERROR") governorPill.classList.add("governor-pill--error");
         else governorPill.classList.add("governor-pill--idle");
 
-        // Dynamic Pill Label (Countdown if override is active)
         if (governorPillLabel) {
           if (data.is_manual_override && data.override_expires_at) {
             const nowSec = Date.now() / 1000;
@@ -1010,14 +1532,34 @@ async function pollGovernor() {
         }
       }
 
-      // Update Hover Tooltip Telemetry Metrics
+      // Update Telemetry Metrics & Visualizer Progress Bars
       const m = data.metrics || {};
-      if (govGpuVal) govGpuVal.textContent = m.gpu_available ? `${Math.round(m.gpu_util_percent || 0)}%` : "N/A";
-      if (govVramVal) govVramVal.textContent = m.vram_used_mb ? `${(m.vram_used_mb / 1024).toFixed(1)} GB` : "N/A";
-      if (govCpuVal) govCpuVal.textContent = `${Math.round(m.cpu_percent || 0)}%`;
-      if (govRamVal) govRamVal.textContent = m.ram_percent ? `${Math.round(m.ram_percent)}%` : "N/A";
+      const gpuPct = Math.round(m.gpu_util_percent || 0);
+      const vramUsedGb = m.vram_used_mb ? (m.vram_used_mb / 1024).toFixed(1) : "0.0";
+      const vramTotalGb = m.vram_total_mb ? (m.vram_total_mb / 1024).toFixed(1) : "8.0";
+      const vramPct = m.vram_util_percent || (m.vram_total_mb ? Math.round((m.vram_used_mb / m.vram_total_mb) * 100) : 0);
+      const cpuPct = Math.round(m.cpu_percent || 0);
+      const ramPct = Math.round(m.ram_percent || 0);
 
-      // If command panel is open, auto-refresh history
+      // Tooltip values
+      if (govGpuVal) govGpuVal.textContent = m.gpu_available ? `${gpuPct}%` : "N/A";
+      if (govVramVal) govVramVal.textContent = `${vramUsedGb} GB`;
+      if (govCpuVal) govCpuVal.textContent = `${cpuPct}%`;
+      if (govRamVal) govRamVal.textContent = `${ramPct}%`;
+
+      // Command Panel Visualizer Meters
+      if (govMeterGpuVal) govMeterGpuVal.textContent = `${gpuPct}%`;
+      if (govMeterGpuFill) govMeterGpuFill.style.width = `${Math.min(100, Math.max(0, gpuPct))}%`;
+
+      if (govMeterVramVal) govMeterVramVal.textContent = `${vramUsedGb} / ${vramTotalGb} GB (${vramPct}%)`;
+      if (govMeterVramFill) govMeterVramFill.style.width = `${Math.min(100, Math.max(0, vramPct))}%`;
+
+      if (govMeterCpuVal) govMeterCpuVal.textContent = `${cpuPct}%`;
+      if (govMeterCpuFill) govMeterCpuFill.style.width = `${Math.min(100, Math.max(0, cpuPct))}%`;
+
+      if (govMeterRamVal) govMeterRamVal.textContent = `${ramPct}%`;
+      if (govMeterRamFill) govMeterRamFill.style.width = `${Math.min(100, Math.max(0, ramPct))}%`;
+
       if (governorWidgetContainer && governorWidgetContainer.classList.contains("open")) {
         fetchGovernorHistory();
       }
@@ -1075,7 +1617,7 @@ async function fetchGovernorHistory() {
             <span>${e.from_status || 'IDLE'} → ${e.to_status || 'IDLE'}</span>
             <span class="gov-hist-time">${timeStr}</span>
           </div>
-          <div class="gov-hist-reasons" title="${reasonsStr}">${reasonsStr}</div>
+          <div class="gov-hist-reasons" title="${reasonsStr}">${escapeHtml(reasonsStr)}</div>
         </div>
       `;
     }).join("");

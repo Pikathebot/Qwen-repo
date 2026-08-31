@@ -60,7 +60,27 @@ def is_backend_running(url: str = "http://127.0.0.1:8000/health") -> bool:
         return False
 
 
-def start_backend() -> subprocess.Popen:
+def start_backend():
+    is_frozen = getattr(sys, "frozen", False)
+    # If frozen and no external python interpreter found, run uvicorn in-process via daemon thread
+    if is_frozen and (not VENV_PYTHON or (VENV_PYTHON.suffix.lower() == ".exe" and "python" not in VENV_PYTHON.name.lower())):
+        logger.info("Starting Jarvis FastAPI backend server in-process via daemon thread...")
+        import threading
+        import uvicorn
+        
+        def _run_server():
+            try:
+                from app.main import app
+                config = uvicorn.Config(app=app, host="127.0.0.1", port=8000, log_level="warning")
+                server = uvicorn.Server(config)
+                server.run()
+            except Exception as e:
+                logger.error("In-process uvicorn server error: %s", e)
+                
+        t = threading.Thread(target=_run_server, daemon=True)
+        t.start()
+        return None
+
     env = os.environ.copy()
     env["PYTHONPATH"] = f"{BACKEND_DIR};{ROOT_DIR}"
     backend_log = open(ROOT_DIR / "backend.log", "a", encoding="utf-8")

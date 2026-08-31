@@ -610,18 +610,18 @@ async def test_api_models_load_wrapped_in_governor_activity():
     """Verify /models/load wraps execution in governor.activity(ActivityType.MODEL_LOADING)."""
     observed_statuses = []
 
-    class FakeLMStudio:
-        async def load_model(self, model_name: str):
+    class FakePM:
+        async def ensure_running(self, model_name: str = "main"):
             # Capture governor status during the active load call
             observed_statuses.append(governor.status)
             return True
 
-    with patch("app.main.get_lmstudio_client", return_value=FakeLMStudio()):
+    with patch("app.main.get_runtime_process_manager", return_value=FakePM()):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as ac:
-            res = await ac.post("/models/load", json={"model_name": "qwen3.8-9b-distill", "backend": "bonsai"})
+            res = await ac.post("/models/load", json={"model_name": "qwen3.5-9b", "backend": "llama_cpp"})
             assert res.status_code == 200
             assert res.json()["success"] is True
-            assert res.json()["model"] == "qwen3.8-9b-distill"
+            assert res.json()["model"] == "qwen3.5-9b"
 
     assert len(observed_statuses) == 1
     assert observed_statuses[0] == GovernorStatus.LOADING

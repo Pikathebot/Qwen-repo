@@ -3,12 +3,10 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Optional
-import ollama
-
+from typing import Any, AsyncIterator, Optional
 
 from app.config import settings, MAX_TOOL_CALLS_PER_TURN
-from app.agent.tools.registry import AVAILABLE_TOOLS, execute_tool, get_tool_schema
+from app.agent.tools.registry import AVAILABLE_TOOLS, execute_tool, get_tool_schema, get_relevant_tools
 from app.agent.permissions import (
     evaluate_tool_calls_batch,
     evaluate_tool_permission,
@@ -18,14 +16,13 @@ from app.agent.permissions import (
     RiskTier,
     ChatMode,
 )
-
 from app.agent.validator import validate_tool_call, CallHistory, ValidationResult
 from app.agent.model_router import ModelRouter, RoutingDecision
+from app.agent.model_provider import ModelProvider
+from app.agent.provider_factory import get_model_provider
 from app.agent.openrouter_client import OpenRouterClient
-from app.agent.lmstudio_client import LMStudioClient
 from app.agent.reliability_monitor import ReliabilityMonitor
 from app.memory.store import MemoryStore
-
 from app.memory.compactor import ContextCompactor
 from app.skills.loader import SkillsLoader, Skill
 from app.mcp.manager import MCPManager
@@ -39,7 +36,7 @@ logger = logging.getLogger("jarvis.agent.orchestrator")
 class OrchestratorResult:
     response: str
     model: str
-    provider: str = "ollama"  # "ollama" | "openrouter"
+    provider: str = "llama_cpp"  # "llama_cpp" | "ollama" | "openrouter"
     status: str = "completed"  # "completed" | "confirmation_required"
     session_id: str = "default"
     route_reason: str = ""
@@ -51,7 +48,6 @@ class OrchestratorResult:
 
 
 def extract_tool_calls_from_text(content: str, user_prompt: str = "") -> tuple[str, list[dict[str, Any]]]:
-
     """
     Extract embedded tool calls outputted as raw text by models:
     1. <tool_call> ... </tool_call> tags
@@ -80,6 +76,8 @@ def extract_tool_calls_from_text(content: str, user_prompt: str = "") -> tuple[s
                         fn_args = {"query": fn_args}
                 if fn_name:
                     extracted.append({
+                        "id": f"call_{uuid.uuid4().hex[:8]}",
+                        "type": "function",
                         "function": {
                             "name": fn_name,
                             "arguments": fn_args if isinstance(fn_args, dict) else {}
@@ -92,12 +90,11 @@ def extract_tool_calls_from_text(content: str, user_prompt: str = "") -> tuple[s
         cleaned_content = tag_pattern.sub("", content).strip()
         return cleaned_content, extracted
 
-    # 2. Match conversational tool announcements (e.g. "use the write_file function ... { ... }" or "execute grep_in_files:\n{...}")
+    # 2. Match conversational tool announcements
     tool_names = {
         "write_file", "patch_file", "find_files", "grep_in_files",
         "read_file", "list_directory", "execute_command", "delete_file",
         "web_search", "fetch_url",
-        # Phase 3 OS Tools
         "launch_app", "focus_app", "set_volume", "mute_toggle", "media_key",
         "get_clipboard", "set_clipboard", "list_processes", "kill_process", "send_toast"
     }
@@ -113,6 +110,8 @@ def extract_tool_calls_from_text(content: str, user_prompt: str = "") -> tuple[s
                 parsed_args = json.loads(raw_json)
                 if isinstance(parsed_args, dict):
                     extracted.append({
+                        "id": f"call_{uuid.uuid4().hex[:8]}",
+                        "type": "function",
                         "function": {
                             "name": t_name,
                             "arguments": parsed_args
@@ -134,37 +133,37 @@ def extract_tool_calls_from_text(content: str, user_prompt: str = "") -> tuple[s
         try:
             parsed = json.loads(raw_json_str)
             if isinstance(parsed, dict):
+                cid = f"call_{uuid.uuid4().hex[:8]}"
                 if "name" in parsed and ("arguments" in parsed or "args" in parsed or "parameters" in parsed or "params" in parsed):
                     fn_name = parsed["name"]
                     fn_args = parsed.get("arguments") or parsed.get("args") or parsed.get("parameters") or parsed.get("params") or {}
-                    extracted.append({"function": {"name": fn_name, "arguments": fn_args}})
+                    extracted.append({"id": cid, "type": "function", "function": {"name": fn_name, "arguments": fn_args}})
                 elif "file_path" in parsed and "content" in parsed:
-                    extracted.append({"function": {"name": "write_file", "arguments": parsed}})
+                    extracted.append({"id": cid, "type": "function", "function": {"name": "write_file", "arguments": parsed}})
                 elif "file_path" in parsed and "search_block" in parsed:
-                    extracted.append({"function": {"name": "patch_file", "arguments": parsed}})
+                    extracted.append({"id": cid, "type": "function", "function": {"name": "patch_file", "arguments": parsed}})
                 elif "pattern" in parsed and ("max_matches" in parsed or "case_sensitive" in parsed or "path" in parsed):
-                    extracted.append({"function": {"name": "grep_in_files", "arguments": parsed}})
+                    extracted.append({"id": cid, "type": "function", "function": {"name": "grep_in_files", "arguments": parsed}})
                 elif "pattern" in parsed and ("root_dir" in parsed or "*" in str(parsed.get("pattern"))):
-                    extracted.append({"function": {"name": "find_files", "arguments": parsed}})
+                    extracted.append({"id": cid, "type": "function", "function": {"name": "find_files", "arguments": parsed}})
                 elif "query" in parsed and ("max_results" in parsed or len(parsed) == 1):
-                    extracted.append({"function": {"name": "web_search", "arguments": parsed}})
+                    extracted.append({"id": cid, "type": "function", "function": {"name": "web_search", "arguments": parsed}})
                 elif "url" in parsed and ("max_chars" in parsed or len(parsed) == 1):
-                    extracted.append({"function": {"name": "fetch_url", "arguments": parsed}})
+                    extracted.append({"id": cid, "type": "function", "function": {"name": "fetch_url", "arguments": parsed}})
                 elif "command" in parsed:
-                    extracted.append({"function": {"name": "execute_command", "arguments": parsed}})
+                    extracted.append({"id": cid, "type": "function", "function": {"name": "execute_command", "arguments": parsed}})
                 elif "name_or_path" in parsed:
-                    extracted.append({"function": {"name": "launch_app", "arguments": parsed}})
+                    extracted.append({"id": cid, "type": "function", "function": {"name": "launch_app", "arguments": parsed}})
                 elif "name_or_title_substring" in parsed:
-                    extracted.append({"function": {"name": "focus_app", "arguments": parsed}})
+                    extracted.append({"id": cid, "type": "function", "function": {"name": "focus_app", "arguments": parsed}})
                 elif "level" in parsed and len(parsed) == 1:
-                    extracted.append({"function": {"name": "set_volume", "arguments": parsed}})
+                    extracted.append({"id": cid, "type": "function", "function": {"name": "set_volume", "arguments": parsed}})
                 elif "pid_or_name" in parsed:
-                    extracted.append({"function": {"name": "kill_process", "arguments": parsed}})
+                    extracted.append({"id": cid, "type": "function", "function": {"name": "kill_process", "arguments": parsed}})
                 elif "title" in parsed and "message" in parsed:
-                    extracted.append({"function": {"name": "send_toast", "arguments": parsed}})
+                    extracted.append({"id": cid, "type": "function", "function": {"name": "send_toast", "arguments": parsed}})
         except Exception:
             pass
-
 
     if extracted:
         cleaned_content = json_block_regex.sub("", content).strip()
@@ -182,6 +181,8 @@ def extract_tool_calls_from_text(content: str, user_prompt: str = "") -> tuple[s
                 if len(code_content.strip()) > 10:
                     logger.info("Inferred write_file tool call for '%s' from generated code block", target_file_path)
                     extracted.append({
+                        "id": f"call_{uuid.uuid4().hex[:8]}",
+                        "type": "function",
                         "function": {
                             "name": "write_file",
                             "arguments": {
@@ -196,12 +197,11 @@ def extract_tool_calls_from_text(content: str, user_prompt: str = "") -> tuple[s
     return content, []
 
 
-
 DEFAULT_SYSTEM_PROMPT = (
     "You are Jarvis, a highly capable local AI assistant running on Windows with direct access to tools, memory, and skills.\n"
     "CRITICAL RULES:\n"
     "1. NEVER output conversational plans or raw JSON code blocks in your text describing tools you want to run. When an action is needed, directly invoke the tool.\n"
-    "2. When creating new files or scripts, ALWAYS write complete, fully-implemented code with proper functions, docstrings, and logic. Invoke 'write_file(file_path=..., content=...)'.\n"
+    "2. If the user explicitly asks to create or save a file on disk (e.g. 'save to test.py' or 'create file ...'), invoke 'write_file(file_path=..., content=...)'. If the user simply asks a coding question, asks to explain something, or asks to write a snippet/script without specifying saving to a file, provide the complete, fully-implemented code directly in markdown in your response.\n"
     "3. When editing or updating code in an existing file, invoke 'patch_file(file_path=..., search_block=..., replacement_block=...)'. If needed, invoke 'read_file' first to see the exact text before patching.\n"
     "4. When searching for words, functions, classes, definitions, or symbols across the codebase/project, ALWAYS invoke 'grep_in_files(pattern=..., path=...)'. Never say a symbol is missing without running grep_in_files first.\n"
     "5. When looking for files or directories by name/pattern/extension, ALWAYS invoke 'find_files(pattern=..., root_dir=...)'.\n"
@@ -220,23 +220,74 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 
+class _LegacyClientAdapter(ModelProvider):
+    def __init__(self, client: Any, name_str: str = "legacy"):
+        self.client = client
+        self._name = name_str
 
+    @property
+    def name(self) -> str:
+        return self._name
 
+    async def health_check(self) -> bool:
+        return True
 
+    async def model_info(self) -> dict[str, Any]:
+        return {"provider": self._name}
+
+    async def list_models(self) -> list[str]:
+        return []
+
+    async def chat(self, messages, model=None, tools=None, temperature=None, profile="general", timeout=None) -> dict[str, Any]:
+        res = await self.client.chat(model=model, messages=messages, tools=tools)
+        if isinstance(res, dict):
+            return res
+        msg = getattr(res, "message", None)
+        if msg is not None:
+            content = getattr(msg, "content", "") or ""
+            tool_calls = getattr(msg, "tool_calls", None)
+            return {
+                "message": {
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": tool_calls
+                },
+                "raw": res
+            }
+        return {"message": {"role": "assistant", "content": str(res), "tool_calls": None}, "raw": res}
+
+    async def stream_chat(self, messages, model=None, tools=None, temperature=None, profile="general", timeout=None) -> AsyncIterator[dict[str, Any]]:
+        if hasattr(self.client, "chat_stream"):
+            async for ev in self.client.chat_stream(model=model, messages=messages, tools=tools):
+                if ev.get("type") == "token":
+                    yield {"event": "text_delta", "content": ev.get("delta", "")}
+                elif ev.get("type") == "done":
+                    yield {"event": "done", "raw": ev}
+        else:
+            res = await self.chat(messages=messages, model=model, tools=tools, temperature=temperature, profile=profile)
+            content = res.get("message", {}).get("content", "")
+            tcs = res.get("message", {}).get("tool_calls")
+            if tcs:
+                for tc in tcs:
+                    yield {"event": "tool_call", "tool_call": tc}
+            yield {"event": "text_delta", "content": content}
+            yield {"event": "done", "raw": res}
+
+    async def unload_model(self, model=None) -> bool:
+        return True
 
 
 class AgentOrchestrator:
     """
-    Orchestrates communication with Ollama and OpenRouter, enforcing hardcoded
-    safety permissions, complexity routing, memory persistence, context compaction,
-    dynamic skills loading, and MCP tool execution.
+    Orchestrates communication with the primary local ModelProvider (llama.cpp)
+    or fallback provider (Ollama), enforcing hardcoded safety permissions,
+    complexity routing, memory persistence, context compaction, dynamic skills loading,
+    and MCP tool execution.
     """
 
     def __init__(
         self,
-        ollama_client: Optional[ollama.AsyncClient] = None,
-        lmstudio_client: Optional[LMStudioClient] = None,
-        openrouter_client: Optional[OpenRouterClient] = None,
+        provider: Optional[ModelProvider] = None,
         router: Optional[ModelRouter] = None,
         memory_store: Optional[MemoryStore] = None,
         compactor: Optional[ContextCompactor] = None,
@@ -245,32 +296,21 @@ class AgentOrchestrator:
         reliability_monitor: Optional[ReliabilityMonitor] = None,
         tts_engine: Optional[ChatterboxEngine] = None,
         voice_output_enabled: Optional[bool] = None,
+        # Backward compatibility parameters
+        ollama_client: Optional[Any] = None,
+        lmstudio_client: Optional[Any] = None,
+        openrouter_client: Optional[Any] = None,
     ):
-        self.ollama_client = ollama_client or ollama.AsyncClient(host=settings.ollama_host)
-        self.lmstudio_client = lmstudio_client or LMStudioClient(
-            base_url=settings.lmstudio_base_url,
-            timeout=90.0
-        )
-        self.openrouter_client = openrouter_client or OpenRouterClient(
-            api_key=settings.openrouter_api_key,
-            base_url=settings.openrouter_base_url
-        )
-        if router is None:
-            if ollama_client is not None and lmstudio_client is None:
-                resolved_backend = "hermes3"
-            elif lmstudio_client is not None and ollama_client is None:
-                resolved_backend = "bonsai"
-            else:
-                resolved_backend = settings.active_model_backend
-            self.router = ModelRouter(
-                default_mode=settings.default_routing_mode,
-                active_backend=resolved_backend,
-                lmstudio_model=settings.lmstudio_model,
-                ollama_model=settings.ollama_model,
-                openrouter_heavy_model=settings.openrouter_heavy_model
-            )
+        if provider is not None:
+            self.provider = provider
+        elif lmstudio_client is not None and type(lmstudio_client).__name__ not in ("LMStudioClient", "NoneType"):
+            self.provider = _LegacyClientAdapter(lmstudio_client, "lmstudio")
+        elif ollama_client is not None and type(ollama_client).__name__ not in ("AsyncClient", "NoneType"):
+            self.provider = _LegacyClientAdapter(ollama_client, "ollama")
         else:
-            self.router = router
+            self.provider = get_model_provider()
+
+        self.router = router or ModelRouter(default_mode=settings.default_routing_mode)
         self.memory_store = memory_store or MemoryStore(db_path=settings.memory_db_path)
         self.compactor = compactor or ContextCompactor(
             max_context_tokens=settings.memory_max_context_tokens,
@@ -283,22 +323,29 @@ class AgentOrchestrator:
         self.voice_output_enabled = (
             voice_output_enabled if voice_output_enabled is not None else settings.voice_output_enabled
         )
+        self.openrouter_client = openrouter_client or OpenRouterClient(
+            api_key=settings.openrouter_api_key,
+            base_url=settings.openrouter_base_url
+        )
+
+    def _synthesize_voice(self, text: str):
+        """Synthesize and play voice output if voice is enabled and TTS engine is available."""
+        if not self.voice_output_enabled or not text or not self.tts_engine:
+            return
+        try:
+            clean_text, _ = extract_tool_calls_from_text(text)
+            clean_text = self.tts_engine.sanitize_text(clean_text or text)
+            if clean_text:
+                audio_bytes = self.tts_engine.synthesize(clean_text)
+                if audio_bytes:
+                    play_audio(audio_bytes)
+        except Exception as e:
+            logger.warning("Error synthesizing or playing orchestrator voice output: %s", e)
 
     def _finalize_result(self, result: OrchestratorResult) -> OrchestratorResult:
-        """
-        Finalizes an orchestrator result. If voice output is enabled and the turn is completed,
-        extracts pure natural-language prose and triggers non-blocking audio synthesis and playback.
-        """
+        """Finalizes orchestrator result and plays audio if enabled."""
         if self.voice_output_enabled and result.status == "completed" and result.response:
-            try:
-                clean_text, _ = extract_tool_calls_from_text(result.response)
-                clean_text = self.tts_engine.sanitize_text(clean_text or result.response)
-                if clean_text:
-                    audio_bytes = self.tts_engine.synthesize(clean_text)
-                    if audio_bytes:
-                        play_audio(audio_bytes)
-            except Exception as e:
-                logger.warning("Error synthesizing or playing orchestrator voice output: %s", e)
+            self._synthesize_voice(result.response)
         return result
 
     async def run(
@@ -313,12 +360,10 @@ class AgentOrchestrator:
         compaction_threshold_override: Optional[int] = None,
         chat_mode: Optional[str] = "WORKSPACE"
     ) -> OrchestratorResult:
-        # 0. Mid-speech interruption: stop any active audio playback immediately on new turn
         stop_playback()
-
         active_session_id = session_id or "default"
 
-        # Conversational voice toggle commands
+        # Voice toggle commands
         lower_msg = user_message.strip().lower()
         if lower_msg in ("stop talking", "be quiet", "silence", "stop speech", "stop audio"):
             stop_playback()
@@ -376,7 +421,7 @@ class AgentOrchestrator:
         effective_mode_str = (chat_mode or session_data.get("chat_mode") or "WORKSPACE").upper()
         resolved_chat_mode = ChatMode.SYSTEM if effective_mode_str == "SYSTEM" else ChatMode.WORKSPACE
 
-        # 1. Evaluate Routing
+        # 1. Routing Decision
         decision = self.router.evaluate(
             message=user_message,
             requested_mode=requested_mode,
@@ -385,7 +430,7 @@ class AgentOrchestrator:
         logger.info("Routing decision: mode='%s', provider='%s', model='%s', reason='%s'",
                     decision.mode, decision.provider, decision.model, decision.reason)
 
-        # 2. Dynamic Skills Matching & Prompt Augmentation
+        # 2. Dynamic Skills Matching & Prompt Injection
         matched_skills = self.skills_loader.match_skills(user_message)
         active_skill_names = [s.name for s in matched_skills]
         if active_skill_names:
@@ -395,18 +440,19 @@ class AgentOrchestrator:
         base_system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
         composed_system_prompt = base_system_prompt + skill_prompt_injection
 
-        # 3. Dynamic Tool Aggregation (Base Tools + MCP Tools)
+        # 3. Dynamic Tool Aggregation
         mcp_tools = self.mcp_manager.get_tool_definitions()
-        combined_tools = AVAILABLE_TOOLS + mcp_tools
+        relevant_base_tools = get_relevant_tools(user_message, chat_mode=effective_mode_str, matched_skills=matched_skills)
+        combined_tools = (relevant_base_tools + mcp_tools) if relevant_base_tools else []
 
-        # 4. Load History & Evaluate Context Compaction
+        # 4. Memory History & Context Compaction
         history = self.memory_store.get_messages(active_session_id)
         current_turn = {"role": "user", "content": user_message}
         full_conversation = history + [current_turn]
 
         compacted_msgs, compaction_info = await self.compactor.compact(
             messages=full_conversation,
-            client=self.ollama_client,
+            client=self.provider,
             model=decision.model,
             threshold_override=compaction_threshold_override
         )
@@ -422,19 +468,22 @@ class AgentOrchestrator:
                 details=compaction_info.get("details")
             )
 
-        # Save user prompt
         self.memory_store.append_message(active_session_id, role="user", content=user_message)
 
-        # 5. Dispatch: OpenRouter (Heavy Mode)
-        if decision.provider == "openrouter":
+        # 5. Determine Profile (coding vs general)
+        is_tool_or_coding = bool(combined_tools) or any(
+            kw in user_message.lower() for kw in ["code", "file", "func", "def ", "class ", "test", "run", "script", "debug"]
+        )
+        profile = "coding" if is_tool_or_coding else "general"
+
+        # 6. Dispatch: OpenRouter Cloud (if enabled)
+        if decision.provider == "openrouter" and getattr(settings, "cloud_routing_enabled", False):
             try:
                 dispatch_messages = [{"role": "system", "content": composed_system_prompt}] + compacted_msgs
-                
                 openrouter_res = await self.openrouter_client.chat(
                     messages=dispatch_messages,
                     model=decision.model
                 )
-
                 content = ""
                 choices = openrouter_res.get("choices", [])
                 if choices:
@@ -453,12 +502,54 @@ class AgentOrchestrator:
                     compaction_performed=compaction_info,
                     active_skills=active_skill_names
                 )
-
             except Exception as e:
-                logger.warning("OpenRouter dispatch failed (%s). Gracefully falling back to local model.", e)
-                if self.router.active_backend == "bonsai":
-                    fallback_model = requested_model or settings.lmstudio_model
-                    result = await self._run_lmstudio_loop(
+                logger.warning("OpenRouter dispatch failed (%s). Falling back to local provider.", e)
+                fallback_provider = get_model_provider("llama_cpp")
+                result = await self._run_provider_loop(
+                    provider=fallback_provider,
+                    session_id=active_session_id,
+                    conversation_messages=compacted_msgs,
+                    tools=combined_tools,
+                    model="main",
+                    system_prompt=composed_system_prompt,
+                    approved_action_ids=approved_action_ids,
+                    max_iterations=max_iterations,
+                    route_reason=f"{decision.reason} [Fallback: OpenRouter failed ({e}), used local llama.cpp]",
+                    chat_mode=resolved_chat_mode,
+                    profile=profile
+                )
+                result.fallback_used = True
+                result.compaction_performed = compaction_info
+                result.active_skills = active_skill_names
+                return result
+
+        # 7. Dispatch: Local Primary Provider (llama.cpp) or Fallback (Ollama)
+        target_provider = self.provider if isinstance(self.provider, _LegacyClientAdapter) else get_model_provider(decision.provider)
+        try:
+            result = await self._run_provider_loop(
+                provider=target_provider,
+                session_id=active_session_id,
+                conversation_messages=compacted_msgs,
+                tools=combined_tools,
+                model=decision.model,
+                system_prompt=composed_system_prompt,
+                approved_action_ids=approved_action_ids,
+                max_iterations=max_iterations,
+                route_reason=decision.reason,
+                chat_mode=resolved_chat_mode,
+                profile=profile
+            )
+            result.compaction_performed = compaction_info
+            result.active_skills = active_skill_names
+            return result
+        except Exception as e:
+            if target_provider.name == "llama_cpp":
+                logger.warning("Primary llama.cpp dispatch failed (%s). Falling back to Ollama.", e)
+                try:
+                    fallback_provider = get_model_provider("ollama")
+                    fallback_model = settings.ollama_main_model
+                    result = await self._run_provider_loop(
+                        provider=fallback_provider,
                         session_id=active_session_id,
                         conversation_messages=compacted_msgs,
                         tools=combined_tools,
@@ -466,81 +557,22 @@ class AgentOrchestrator:
                         system_prompt=composed_system_prompt,
                         approved_action_ids=approved_action_ids,
                         max_iterations=max_iterations,
-                        chat_mode=resolved_chat_mode
+                        route_reason=f"{decision.reason} [Fallback: llama.cpp failed ({e}), used local Ollama ({fallback_model})]",
+                        chat_mode=resolved_chat_mode,
+                        profile=profile
                     )
-                    result.route_reason = f"{decision.reason} [Fallback: OpenRouter failed ({str(e)}), used local LM Studio]"
-                else:
-                    fallback_model = requested_model or settings.ollama_model
-                    result = await self._run_ollama_loop(
-                        session_id=active_session_id,
-                        conversation_messages=compacted_msgs,
-                        tools=combined_tools,
-                        model=fallback_model,
-                        system_prompt=composed_system_prompt,
-                        approved_action_ids=approved_action_ids,
-                        max_iterations=max_iterations,
-                        chat_mode=resolved_chat_mode
-                    )
-                    result.route_reason = f"{decision.reason} [Fallback: OpenRouter failed ({str(e)}), used local Ollama]"
-                result.fallback_used = True
-                result.compaction_performed = compaction_info
-                result.active_skills = active_skill_names
-                return result
+                    result.fallback_used = True
+                    result.compaction_performed = compaction_info
+                    result.active_skills = active_skill_names
+                    return result
+                except Exception as fallback_err:
+                    logger.error("Fallback to Ollama also failed: %s", fallback_err)
+                    raise e
+            raise
 
-        # 6. Dispatch: Local LM Studio (Stage B Normal Mode Default)
-        if decision.provider == "lmstudio":
-            try:
-                result = await self._run_lmstudio_loop(
-                    session_id=active_session_id,
-                    conversation_messages=compacted_msgs,
-                    tools=combined_tools,
-                    model=decision.model,
-                    system_prompt=composed_system_prompt,
-                    approved_action_ids=approved_action_ids,
-                    max_iterations=max_iterations,
-                    route_reason=decision.reason,
-                    chat_mode=resolved_chat_mode
-                )
-                result.compaction_performed = compaction_info
-                result.active_skills = active_skill_names
-                return result
-            except Exception as e:
-                logger.warning("LM Studio dispatch failed (%s). Gracefully falling back to local Ollama.", e)
-                fallback_model = settings.ollama_model
-                result = await self._run_ollama_loop(
-                    session_id=active_session_id,
-                    conversation_messages=compacted_msgs,
-                    tools=combined_tools,
-                    model=fallback_model,
-                    system_prompt=composed_system_prompt,
-                    approved_action_ids=approved_action_ids,
-                    max_iterations=max_iterations,
-                    chat_mode=resolved_chat_mode
-                )
-                result.route_reason = f"{decision.reason} [Fallback: LM Studio failed ({str(e)}), used local Ollama ({fallback_model})]"
-                result.fallback_used = True
-                result.compaction_performed = compaction_info
-                result.active_skills = active_skill_names
-                return result
-
-        # 7. Dispatch: Local Ollama (Normal Mode / Rollback Target)
-        result = await self._run_ollama_loop(
-            session_id=active_session_id,
-            conversation_messages=compacted_msgs,
-            tools=combined_tools,
-            model=decision.model,
-            system_prompt=composed_system_prompt,
-            approved_action_ids=approved_action_ids,
-            max_iterations=max_iterations,
-            route_reason=decision.reason,
-            chat_mode=resolved_chat_mode
-        )
-        result.compaction_performed = compaction_info
-        result.active_skills = active_skill_names
-        return result
-
-    async def _run_lmstudio_loop(
+    async def _run_provider_loop(
         self,
+        provider: ModelProvider,
         session_id: str,
         conversation_messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
@@ -548,19 +580,20 @@ class AgentOrchestrator:
         system_prompt: str,
         approved_action_ids: Optional[list[str]] = None,
         max_iterations: int = 5,
-        route_reason: str = "Local LM Studio execution",
-        chat_mode: ChatMode = ChatMode.WORKSPACE
+        route_reason: str = "Local provider execution",
+        chat_mode: ChatMode = ChatMode.WORKSPACE,
+        profile: str = "general"
     ) -> OrchestratorResult:
         """
-        Execute agent loop against LM Studio (OpenAI-compatible) endpoint with
-        robust Stage A schema validation, loop breaking, rate limits, and safety gating.
+        Execute deterministic agent loop against ModelProvider with schema validation,
+        loop breaking, rate limits, and safety gating.
         """
         turn_id = f"turn_{uuid.uuid4().hex[:12]}"
         call_history = CallHistory(window=3)
         total_turn_tool_calls = 0
         tool_turn_counts: dict[str, int] = {}
         repair_attempts: dict[str, int] = {}
-        model_tier = "tier2"
+        model_tier = "tier2" if provider.name == "llama_cpp" else "tier1"
 
         messages: list[dict[str, Any]] = []
         messages.append({"role": "system", "content": system_prompt})
@@ -569,12 +602,13 @@ class AgentOrchestrator:
         tools_used: list[dict[str, Any]] = []
 
         for iteration in range(max_iterations):
-            logger.info("LM Studio loop iteration %d/%d for model '%s' (turn_id=%s)", iteration + 1, max_iterations, model, turn_id)
+            logger.info("%s loop iteration %d/%d for model '%s' (turn_id=%s)", provider.name, iteration + 1, max_iterations, model, turn_id)
 
-            chat_response = await self.lmstudio_client.chat(
+            chat_response = await provider.chat(
                 model=model,
                 messages=messages,
-                tools=tools
+                tools=tools if tools else None,
+                profile=profile
             )
 
             message_obj = chat_response.get("message", {})
@@ -588,27 +622,27 @@ class AgentOrchestrator:
                     if isinstance(msg, dict) and msg.get("role") == "user":
                         latest_user_prompt = msg.get("content", "")
                         break
-
                 content, extracted_calls = extract_tool_calls_from_text(content, user_prompt=latest_user_prompt)
                 if extracted_calls:
-                    logger.info("Extracted %d tool call(s) from raw LM Studio text stream", len(extracted_calls))
+                    logger.info("Extracted %d tool call(s) from raw model text stream", len(extracted_calls))
                     tool_calls = extracted_calls
 
             if not tool_calls:
                 if not content.strip():
-                    logger.info("LM Studio returned empty content with tools schema. Requesting text generation without tools parameter.")
-                    synth_response = await self.lmstudio_client.chat(
+                    logger.info("Model returned empty content with tools schema. Requesting text generation without tools parameter.")
+                    synth_response = await provider.chat(
                         model=model,
-                        messages=messages
+                        messages=messages,
+                        profile=profile
                     )
                     content = synth_response.get("message", {}).get("content", "") or ""
 
-                logger.info("No further tool calls requested. Returning final LM Studio response.")
+                logger.info("No further tool calls requested. Returning final %s response.", provider.name)
                 self.memory_store.append_message(session_id, role="assistant", content=content)
                 return OrchestratorResult(
                     response=content,
                     model=model,
-                    provider="lmstudio",
+                    provider=provider.name,
                     status="completed",
                     session_id=session_id,
                     route_reason=route_reason,
@@ -616,7 +650,7 @@ class AgentOrchestrator:
                     tools_used=tools_used
                 )
 
-            logger.info("LM Studio requested %d tool call(s)", len(tool_calls))
+            logger.info("%s requested %d tool call(s)", provider.name, len(tool_calls))
 
             # Normalize tool calls
             normalized_tool_calls = []
@@ -638,12 +672,12 @@ class AgentOrchestrator:
                     break
             if duplicate_detected:
                 loop_msg = "Jarvis attempted the same action twice — stopping to avoid a loop."
-                logger.warning("Duplicate tool invocation loop detected in LM Studio turn. Halting turn.")
+                logger.warning("Duplicate tool invocation loop detected in %s turn. Halting turn.", provider.name)
                 self.memory_store.append_message(session_id, role="assistant", content=loop_msg)
                 return OrchestratorResult(
                     response=loop_msg,
                     model=model,
-                    provider="lmstudio",
+                    provider=provider.name,
                     status="completed",
                     session_id=session_id,
                     route_reason=route_reason,
@@ -654,7 +688,7 @@ class AgentOrchestrator:
             for tc in normalized_tool_calls:
                 call_history.record(tc["name"], tc["args"])
 
-            # 3. Per-Tool Rate Limiting Check (§2)
+            # Per-Tool Rate Limiting
             rate_limited_tool = None
             for tc in normalized_tool_calls:
                 fn_name = tc["name"]
@@ -671,7 +705,7 @@ class AgentOrchestrator:
                 return OrchestratorResult(
                     response=rate_msg,
                     model=model,
-                    provider="lmstudio",
+                    provider=provider.name,
                     status="completed",
                     session_id=session_id,
                     route_reason=route_reason,
@@ -681,13 +715,13 @@ class AgentOrchestrator:
 
             # Global per-turn cap
             if total_turn_tool_calls + len(normalized_tool_calls) > MAX_TOOL_CALLS_PER_TURN:
-                cap_msg = f"Per-turn tool call limit ({MAX_TOOL_CALLS_PER_TURN}) exceeded. Halting further tool execution for safety."
+                cap_msg = f"Turn tool call limit exceeded: Reached maximum allowed {MAX_TOOL_CALLS_PER_TURN} calls for this turn. Halting further tool execution for safety."
                 logger.warning("Turn tool call cap reached (%d / %d). Halting turn.", total_turn_tool_calls, MAX_TOOL_CALLS_PER_TURN)
                 self.memory_store.append_message(session_id, role="assistant", content=cap_msg)
                 return OrchestratorResult(
                     response=cap_msg,
                     model=model,
-                    provider="lmstudio",
+                    provider=provider.name,
                     status="completed",
                     session_id=session_id,
                     route_reason=route_reason,
@@ -698,7 +732,6 @@ class AgentOrchestrator:
             # Schema validation & Repair-then-Escalate
             validation_failed_items = []
             validated_tool_calls = []
-            escalate_to_heavy = False
 
             for tc in normalized_tool_calls:
                 fn_name = tc["name"]
@@ -744,48 +777,37 @@ class AgentOrchestrator:
                             repair_attempt=1
                         )
                         self.reliability_monitor.evaluate_and_trigger_rollback(model_tier=model_tier)
-                        escalate_to_heavy = True
-                        break
+                        if self.openrouter_client and (getattr(self.openrouter_client, "is_configured", False) or hasattr(self.openrouter_client, "chat")):
+                            logger.warning("Tool call validation failed twice. Escalating remaining turn to Tier 3 (OpenRouter).")
+                            try:
+                                openrouter_res = await self.openrouter_client.chat(
+                                    messages=messages,
+                                    model=settings.openrouter_heavy_model
+                                )
+                                esc_content = ""
+                                choices = openrouter_res.get("choices", []) if isinstance(openrouter_res, dict) else []
+                                if choices:
+                                    esc_content = choices[0].get("message", {}).get("content", "")
+                                elif isinstance(openrouter_res, dict) and "message" in openrouter_res:
+                                    esc_content = openrouter_res["message"].get("content", "")
+                                self.memory_store.append_message(session_id, role="assistant", content=esc_content)
+                                return OrchestratorResult(
+                                    response=esc_content,
+                                    model=settings.openrouter_heavy_model,
+                                    provider="openrouter",
+                                    status="completed",
+                                    session_id=session_id,
+                                    route_reason=f"{route_reason} [Escalated to Tier 3 OpenRouter due to repeated tool argument validation failures]",
+                                    fallback_used=False,
+                                    tools_used=tools_used
+                                )
+                            except Exception as e:
+                                logger.error("OpenRouter Tier 3 escalation failed: %s", e)
+                        validation_failed_items.append((fn_name, fn_args, val_res.error, call_id))
                 else:
                     validated_tool_calls.append((call_id, fn_name, val_res.args))
 
-            if escalate_to_heavy:
-                logger.warning("LM Studio tool call validation failed twice. Escalating remaining turn to Tier 3 (OpenRouter).")
-                try:
-                    openrouter_res = await self.openrouter_client.chat(
-                        messages=messages,
-                        model=settings.openrouter_heavy_model
-                    )
-                    esc_content = ""
-                    choices = openrouter_res.get("choices", [])
-                    if choices:
-                        esc_content = choices[0].get("message", {}).get("content", "")
-                    self.memory_store.append_message(session_id, role="assistant", content=esc_content)
-                    return OrchestratorResult(
-                        response=esc_content,
-                        model=settings.openrouter_heavy_model,
-                        provider="openrouter",
-                        status="completed",
-                        session_id=session_id,
-                        route_reason=f"{route_reason} [Escalated to Tier 3 OpenRouter due to repeated tool argument validation failures]",
-                        fallback_used=False,
-                        tools_used=tools_used
-                    )
-                except Exception as e:
-                    logger.error("Tier 3 escalation OpenRouter call failed: %s", e)
-                    esc_error_msg = f"Escalation to Tier 3 OpenRouter failed ({e}). Stopping turn."
-                    return OrchestratorResult(
-                        response=esc_error_msg,
-                        model=model,
-                        provider="lmstudio",
-                        status="completed",
-                        session_id=session_id,
-                        route_reason=route_reason,
-                        fallback_used=False,
-                        tools_used=tools_used
-                    )
-
-            if validation_failed_items:
+            if validation_failed_items and not validated_tool_calls:
                 assistant_msg = {
                     "role": "assistant",
                     "content": content,
@@ -793,7 +815,7 @@ class AgentOrchestrator:
                         {
                             "id": item[3],
                             "type": "function",
-                            "function": {"name": item[0], "arguments": json.dumps(item[1]) if isinstance(item[1], dict) else str(item[1])}
+                            "function": {"name": item[0], "arguments": item[1]}
                         }
                         for item in validation_failed_items
                     ]
@@ -810,7 +832,7 @@ class AgentOrchestrator:
                 continue
 
             # Safety permission checks
-            batch_calls = [{"name": name, "arguments": args} for _, name, args in validated_tool_calls]
+            batch_calls = [{"name": name, "args": args} for _, name, args in validated_tool_calls]
             batch_permission = evaluate_tool_calls_batch(
                 tool_calls=batch_calls,
                 chat_mode=chat_mode,
@@ -853,7 +875,7 @@ class AgentOrchestrator:
                 return OrchestratorResult(
                     response=confirm_response,
                     model=model,
-                    provider="lmstudio",
+                    provider=provider.name,
                     status="confirmation_required",
                     session_id=session_id,
                     route_reason=route_reason,
@@ -870,7 +892,7 @@ class AgentOrchestrator:
                     {
                         "id": cid,
                         "type": "function",
-                        "function": {"name": name, "arguments": json.dumps(args) if isinstance(args, dict) else str(args)}
+                        "function": {"name": name, "arguments": args}
                     }
                     for cid, name, args in validated_tool_calls
                 ]
@@ -917,10 +939,11 @@ class AgentOrchestrator:
                 })
                 self.memory_store.append_message(session_id, role="tool", content=tool_output, name=fn_name)
 
-        logger.warning("Max tool iterations reached (%d). Requesting final summary from LM Studio.", max_iterations)
-        final_response = await self.lmstudio_client.chat(
+        logger.warning("Max tool iterations reached (%d). Requesting final summary from %s.", max_iterations, provider.name)
+        final_response = await provider.chat(
             model=model,
-            messages=messages
+            messages=messages,
+            profile=profile
         )
         final_content = final_response.get("message", {}).get("content", "") or ""
         self.memory_store.append_message(session_id, role="assistant", content=final_content)
@@ -928,7 +951,7 @@ class AgentOrchestrator:
         return OrchestratorResult(
             response=final_content,
             model=model,
-            provider="lmstudio",
+            provider=provider.name,
             status="completed",
             session_id=session_id,
             route_reason=route_reason,
@@ -936,8 +959,117 @@ class AgentOrchestrator:
             tools_used=tools_used
         )
 
-    async def _run_ollama_loop(
+    async def run_stream(
         self,
+        user_message: str,
+        session_id: Optional[str] = None,
+        requested_mode: Optional[str] = None,
+        requested_model: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        approved_action_ids: Optional[list[str]] = None,
+        max_iterations: int = 5,
+        compaction_threshold_override: Optional[int] = None,
+        chat_mode: Optional[str] = "WORKSPACE"
+    ):
+        """
+        Asynchronously streams chat tokens, tool execution events, and metadata.
+        Yields JSON event dictionaries: {"event": "...", "data": {...}}
+        """
+        stop_playback()
+        active_session_id = session_id or "default"
+
+        # Conversational voice toggle commands
+        lower_msg = user_message.strip().lower()
+        if lower_msg in ("stop talking", "be quiet", "silence", "stop speech", "stop audio"):
+            stop_playback()
+            yield {"event": "done", "data": {"response": "I have stopped speaking.", "model": "system", "provider": "system", "session_id": active_session_id}}
+            return
+        if lower_msg in ("voice on", "enable voice", "turn voice on", "unmute voice"):
+            self.voice_output_enabled = True
+            msg = "Voice output is now enabled."
+            yield {"event": "done", "data": {"response": msg, "model": "system", "provider": "system", "session_id": active_session_id}}
+            self._synthesize_voice(msg)
+            return
+        if lower_msg in ("voice off", "disable voice", "turn voice off", "mute voice"):
+            self.voice_output_enabled = False
+            stop_playback()
+            yield {"event": "done", "data": {"response": "Voice output is now disabled.", "model": "system", "provider": "system", "session_id": active_session_id}}
+            return
+
+        session_data = self.memory_store.get_or_create_session(active_session_id, chat_mode=chat_mode)
+        effective_mode_str = (chat_mode or session_data.get("chat_mode") or "WORKSPACE").upper()
+        resolved_chat_mode = ChatMode.SYSTEM if effective_mode_str == "SYSTEM" else ChatMode.WORKSPACE
+
+        decision = self.router.evaluate(
+            message=user_message,
+            requested_mode=requested_mode,
+            requested_model=requested_model
+        )
+
+        matched_skills = self.skills_loader.match_skills(user_message)
+        active_skill_names = [s.name for s in matched_skills]
+        skill_prompt_injection = self.skills_loader.build_skill_prompt_injection(matched_skills)
+        base_system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
+        composed_system_prompt = base_system_prompt + skill_prompt_injection
+
+        mcp_tools = self.mcp_manager.get_tool_definitions()
+        relevant_base_tools = get_relevant_tools(user_message, chat_mode=effective_mode_str, matched_skills=matched_skills)
+        combined_tools = (relevant_base_tools + mcp_tools) if relevant_base_tools else []
+
+        history = self.memory_store.get_messages(active_session_id)
+        current_turn = {"role": "user", "content": user_message}
+        full_conversation = history + [current_turn]
+
+        compacted_msgs, compaction_info = await self.compactor.compact(
+            messages=full_conversation,
+            client=self.provider,
+            model=decision.model,
+            threshold_override=compaction_threshold_override
+        )
+        if compaction_info:
+            self.memory_store.replace_messages(active_session_id, compacted_msgs[:-1])
+
+        self.memory_store.append_message(active_session_id, role="user", content=user_message)
+
+        is_tool_or_coding = bool(combined_tools) or any(
+            kw in user_message.lower() for kw in ["code", "file", "func", "def ", "class ", "test", "run", "script", "debug"]
+        )
+        profile = "coding" if is_tool_or_coding else "general"
+
+        if decision.provider == "openrouter" and getattr(settings, "cloud_routing_enabled", False):
+            async for ev in self._run_openrouter_stream_loop(
+                session_id=active_session_id,
+                conversation_messages=compacted_msgs,
+                model=decision.model,
+                system_prompt=composed_system_prompt,
+                route_reason=decision.reason,
+                active_skills=active_skill_names,
+                compaction_info=compaction_info
+            ):
+                yield ev
+            return
+
+        target_provider = self.provider if isinstance(self.provider, _LegacyClientAdapter) else get_model_provider(decision.provider)
+        async for ev in self._run_provider_stream_loop(
+            provider=target_provider,
+            session_id=active_session_id,
+            conversation_messages=compacted_msgs,
+            tools=combined_tools,
+            model=decision.model,
+            system_prompt=composed_system_prompt,
+            approved_action_ids=approved_action_ids,
+            max_iterations=max_iterations,
+            route_reason=decision.reason,
+            chat_mode=resolved_chat_mode,
+            profile=profile,
+            active_skills=active_skill_names,
+            compaction_info=compaction_info
+        ):
+            yield ev
+
+    async def _run_provider_stream_loop(
+        self,
+        provider: ModelProvider,
         session_id: str,
         conversation_messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
@@ -945,17 +1077,13 @@ class AgentOrchestrator:
         system_prompt: str,
         approved_action_ids: Optional[list[str]] = None,
         max_iterations: int = 5,
-        route_reason: str = "Local Ollama execution",
-        chat_mode: ChatMode = ChatMode.WORKSPACE
-    ) -> OrchestratorResult:
-
-        turn_id = f"turn_{uuid.uuid4().hex[:12]}"
+        route_reason: str = "Local provider execution",
+        chat_mode: ChatMode = ChatMode.WORKSPACE,
+        profile: str = "general",
+        active_skills: Optional[list[str]] = None,
+        compaction_info: Optional[dict] = None
+    ):
         call_history = CallHistory(window=3)
-        total_turn_tool_calls = 0
-        tool_turn_counts: dict[str, int] = {}
-        repair_attempts: dict[str, int] = {}
-        model_tier = "tier1"
-
         messages: list[dict[str, Any]] = []
         messages.append({"role": "system", "content": system_prompt})
         messages.extend(conversation_messages)
@@ -963,284 +1091,112 @@ class AgentOrchestrator:
         tools_used: list[dict[str, Any]] = []
 
         for iteration in range(max_iterations):
-            logger.info("Agent loop iteration %d/%d for model '%s' (turn_id=%s)", iteration + 1, max_iterations, model, turn_id)
-            
-            chat_response = await self.ollama_client.chat(
+            stream_gen = provider.stream_chat(
                 model=model,
                 messages=messages,
-                tools=tools
+                tools=tools if tools else None,
+                profile=profile
             )
 
-            message_obj = chat_response.get("message") if isinstance(chat_response, dict) else getattr(chat_response, "message", None)
-            content = ""
-            tool_calls = None
+            done_event = None
+            accumulated_tool_calls = []
 
-            if isinstance(message_obj, dict):
-                content = message_obj.get("content", "") or ""
-                tool_calls = message_obj.get("tool_calls")
-            elif message_obj is not None:
-                content = getattr(message_obj, "content", "") or ""
-                tool_calls = getattr(message_obj, "tool_calls", None)
+            async for ev in stream_gen:
+                event_type = ev.get("event")
+                if event_type == "text_delta":
+                    yield {"event": "token", "data": {"delta": ev.get("content", "")}}
+                elif event_type == "tool_draft":
+                    yield {"event": "tool_draft", "data": {"tool": ev.get("tool", "tool"), "args_delta": ev.get("args_delta", "")}}
+                elif event_type == "tool_call":
+                    accumulated_tool_calls.append(ev.get("tool_call"))
+                elif event_type == "done":
+                    done_event = ev
+                elif event_type == "error":
+                    yield {"event": "error", "data": {"error": ev.get("message", "Stream error")}}
+                    return
 
-            # If Ollama didn't populate tool_calls, check if the model outputted raw <tool_call> text or code blocks
+            raw_done = done_event.get("raw", {}) if done_event else {}
+            content = raw_done.get("content", "") or ""
+            tool_calls = accumulated_tool_calls or raw_done.get("tool_calls")
+
             if not tool_calls:
                 latest_user_prompt = ""
                 for msg in reversed(messages):
                     if isinstance(msg, dict) and msg.get("role") == "user":
                         latest_user_prompt = msg.get("content", "")
                         break
-                    elif hasattr(msg, "role") and getattr(msg, "role", "") == "user":
-                        latest_user_prompt = getattr(msg, "content", "")
-                        break
-
-                content, extracted_calls = extract_tool_calls_from_text(content, user_prompt=latest_user_prompt)
+                cleaned_content, extracted_calls = extract_tool_calls_from_text(content, user_prompt=latest_user_prompt)
                 if extracted_calls:
-                    logger.info("Extracted %d tool call(s) from raw model text stream", len(extracted_calls))
                     tool_calls = extracted_calls
+                    content = cleaned_content
 
-            # If still no tools were invoked, save assistant message and return
             if not tool_calls:
                 if not content.strip():
-                    logger.info("Model returned empty content with tools schema. Requesting text generation without tools parameter.")
-                    synth_response = await self.ollama_client.chat(
-                        model=model,
-                        messages=messages
-                    )
-                    if isinstance(synth_response, dict):
-                        content = synth_response.get("message", {}).get("content", "") or ""
-                    else:
-                        content = getattr(synth_response.message, "content", "") or ""
+                    synth_response = await provider.chat(model=model, messages=messages, profile=profile)
+                    content = synth_response.get("message", {}).get("content", "") or ""
+                    yield {"event": "token", "data": {"delta": content}}
 
-                logger.info("No further tool calls requested. Returning final model response.")
                 self.memory_store.append_message(session_id, role="assistant", content=content)
-                return OrchestratorResult(
-                    response=content,
-                    model=model,
-                    provider="ollama",
-                    status="completed",
-                    session_id=session_id,
-                    route_reason=route_reason,
-                    fallback_used=False,
-                    tools_used=tools_used
-                )
+                self._synthesize_voice(content)
+                yield {
+                    "event": "done",
+                    "data": {
+                        "response": content,
+                        "model": model,
+                        "provider": provider.name,
+                        "status": "completed",
+                        "session_id": session_id,
+                        "route_reason": route_reason,
+                        "fallback_used": False,
+                        "compaction_performed": compaction_info,
+                        "active_skills": active_skills or [],
+                        "tools_used": tools_used
+                    }
+                }
+                return
 
-            logger.info("Model requested %d tool call(s)", len(tool_calls))
-
-            # Normalize tool calls
             normalized_tool_calls = []
             for tc in tool_calls:
-                if isinstance(tc, dict):
-                    func_data = tc.get("function", {})
-                    fn_name = func_data.get("name", "")
-                    fn_args = func_data.get("arguments", {})
-                else:
-                    func_obj = getattr(tc, "function", None)
-                    fn_name = getattr(func_obj, "name", "")
-                    fn_args = getattr(func_obj, "arguments", {})
+                func_data = tc.get("function", {})
+                fn_name = func_data.get("name", "")
+                fn_args = func_data.get("arguments", {})
+                normalized_tool_calls.append({
+                    "id": tc.get("id", f"call_{uuid.uuid4().hex[:8]}"),
+                    "name": fn_name,
+                    "args": fn_args if isinstance(fn_args, dict) else {}
+                })
 
-                if not isinstance(fn_args, dict):
-                    fn_args = {}
-
-                normalized_tool_calls.append({"name": fn_name, "args": fn_args})
-
-            # 1. Global Per-Turn Cap Check (§1.5)
-            if total_turn_tool_calls + len(normalized_tool_calls) > MAX_TOOL_CALLS_PER_TURN:
-                logger.warning("Per-turn tool call limit reached (%d calls max). Halting execution.", MAX_TOOL_CALLS_PER_TURN)
-                cap_msg = f"Turn tool call limit exceeded: Jarvis reached the maximum limit of {MAX_TOOL_CALLS_PER_TURN} tool calls for this turn. Stopping execution."
-                self.memory_store.append_message(session_id, role="assistant", content=cap_msg)
-                return OrchestratorResult(
-                    response=cap_msg,
-                    model=model,
-                    provider="ollama",
-                    status="completed",
-                    session_id=session_id,
-                    route_reason=route_reason,
-                    fallback_used=False,
-                    tools_used=tools_used
-                )
-
-            # 2. Duplicate / Loop Breaker Check (§1.4)
             duplicate_detected = False
             for tc in normalized_tool_calls:
-                fn_name = tc["name"]
-                fn_args = tc["args"]
-                if call_history.is_duplicate(fn_name, fn_args):
-                    logger.warning("Duplicate consecutive tool call detected for '%s' with args %s. Halting loop.", fn_name, fn_args)
+                if call_history.is_duplicate(tc["name"], tc["args"]):
                     duplicate_detected = True
                     break
-                call_history.record(fn_name, fn_args)
-
             if duplicate_detected:
-                loop_msg = "Jarvis attempted the same action twice — stopping to avoid a loop."
+                loop_msg = "Jarvis stopped executing to avoid a duplicate action loop."
+                yield {"event": "token", "data": {"delta": loop_msg}}
                 self.memory_store.append_message(session_id, role="assistant", content=loop_msg)
-                return OrchestratorResult(
-                    response=loop_msg,
-                    model=model,
-                    provider="ollama",
-                    status="completed",
-                    session_id=session_id,
-                    route_reason=route_reason,
-                    fallback_used=False,
-                    tools_used=tools_used
-                )
-
-            # 3. Per-Tool Rate Limiting Check (§2)
-            rate_limited_tool = None
-            for tc in normalized_tool_calls:
-                fn_name = tc["name"]
-                current_count = tool_turn_counts.get(fn_name, 0)
-                if not check_rate_limit(fn_name, current_count):
-                    rate_limited_tool = fn_name
-                    break
-
-            if rate_limited_tool:
-                limit = RATE_LIMITS.get(rate_limited_tool, 0)
-                rate_msg = f"Rate limit exceeded: Tool '{rate_limited_tool}' reached the maximum allowed limit of {limit} calls for this turn."
-                logger.warning(rate_msg)
-                self.memory_store.append_message(session_id, role="assistant", content=rate_msg)
-                return OrchestratorResult(
-                    response=rate_msg,
-                    model=model,
-                    provider="ollama",
-                    status="completed",
-                    session_id=session_id,
-                    route_reason=route_reason,
-                    fallback_used=False,
-                    tools_used=tools_used
-                )
-
-            # 4. Schema Validation & Repair-then-Escalate (§1.2 & §1.3)
-            validation_failed_items = []
-            validated_tool_calls = []
-            escalate_to_heavy = False
-
-            for tc in normalized_tool_calls:
-                fn_name = tc["name"]
-                fn_args = tc["args"]
-                call_id = f"call_{uuid.uuid4().hex[:12]}"
-                schema = get_tool_schema(fn_name)
-                current_attempt = repair_attempts.get(fn_name, 0)
-
-                val_res = await validate_tool_call(
-                    tool_name=fn_name,
-                    raw_args=fn_args,
-                    schema=schema,
-                    repair_attempt=current_attempt
-                )
-
-                if not val_res.valid:
-                    if current_attempt == 0:
-                        repair_attempts[fn_name] = 1
-                        self.memory_store.record_tool_call_audit(
-                            call_id=call_id,
-                            turn_id=turn_id,
-                            tool_name=fn_name,
-                            args=fn_args,
-                            model_tier=model_tier,
-                            validation_result="invalid_repaired",
-                            permission_result="blocked",
-                            executed=False,
-                            error=val_res.error,
-                            repair_attempt=0
-                        )
-                        validation_failed_items.append((fn_name, fn_args, val_res.error))
-                    else:
-                        self.memory_store.record_tool_call_audit(
-                            call_id=call_id,
-                            turn_id=turn_id,
-                            tool_name=fn_name,
-                            args=fn_args,
-                            model_tier=model_tier,
-                            validation_result="invalid_escalated",
-                            permission_result="blocked",
-                            executed=False,
-                            error=val_res.error,
-                            repair_attempt=1
-                        )
-                        escalate_to_heavy = True
-                        break
-                else:
-                    validated_tool_calls.append((call_id, fn_name, val_res.args))
-
-            if escalate_to_heavy:
-                logger.warning("Tool call validation failed twice. Escalating remaining turn to Tier 3 (OpenRouter).")
-                try:
-                    openrouter_res = await self.openrouter_client.chat(
-                        messages=messages,
-                        model=settings.openrouter_heavy_model
-                    )
-                    esc_content = ""
-                    choices = openrouter_res.get("choices", [])
-                    if choices:
-                        esc_content = choices[0].get("message", {}).get("content", "")
-                    self.memory_store.append_message(session_id, role="assistant", content=esc_content)
-                    return OrchestratorResult(
-                        response=esc_content,
-                        model=settings.openrouter_heavy_model,
-                        provider="openrouter",
-                        status="completed",
-                        session_id=session_id,
-                        route_reason=f"{route_reason} [Escalated to Tier 3 OpenRouter due to repeated tool argument validation failures]",
-                        fallback_used=False,
-                        tools_used=tools_used
-                    )
-                except Exception as e:
-                    logger.error("Tier 3 escalation OpenRouter call failed: %s", e)
-                    esc_error_msg = f"Escalation to Tier 3 OpenRouter failed ({e}). Stopping turn."
-                    return OrchestratorResult(
-                        response=esc_error_msg,
-                        model=model,
-                        provider="ollama",
-                        status="completed",
-                        session_id=session_id,
-                        route_reason=route_reason,
-                        fallback_used=False,
-                        tools_used=tools_used
-                    )
-
-            if validation_failed_items:
-                if isinstance(message_obj, dict):
-                    messages.append(message_obj)
-                else:
-                    assistant_msg = {
-                        "role": "assistant",
-                        "content": content,
-                        "tool_calls": []
+                yield {
+                    "event": "done",
+                    "data": {
+                        "response": loop_msg,
+                        "model": model,
+                        "provider": provider.name,
+                        "status": "completed",
+                        "session_id": session_id,
+                        "route_reason": route_reason,
+                        "fallback_used": False,
+                        "tools_used": tools_used
                     }
-                    for tc in tool_calls:
-                        if isinstance(tc, dict):
-                            assistant_msg["tool_calls"].append(tc)
-                        else:
-                            func_obj = getattr(tc, "function", None)
-                            assistant_msg["tool_calls"].append({
-                                "function": {
-                                    "name": getattr(func_obj, "name", ""),
-                                    "arguments": getattr(func_obj, "arguments", {})
-                                }
-                            })
-                    messages.append(assistant_msg)
+                }
+                return
 
-                for fn_name, fn_args, err_str in validation_failed_items:
-                    repair_msg = f"Schema validation error for '{fn_name}': {err_str}. Please correct the parameters and retry."
-                    messages.append({
-                        "role": "tool",
-                        "name": fn_name,
-                        "content": repair_msg
-                    })
-                    self.memory_store.append_message(session_id, role="tool", content=repair_msg, name=fn_name)
-                continue
-
-            # 5. Evaluate permissions in a single batch pass
-            calls_for_perm = [{"name": name, "args": args} for _, name, args in validated_tool_calls]
-            batch_permission = evaluate_tool_calls_batch(
-                calls_for_perm,
+            batch_result = evaluate_tool_calls_batch(
+                tool_calls=[{"name": tc["name"], "args": tc["args"]} for tc in normalized_tool_calls],
                 approved_action_ids=approved_action_ids,
                 chat_mode=chat_mode
             )
 
-
-            # If any tool requires confirmation and is not approved, block execution
-            if not batch_permission.all_allowed:
+            if not batch_result.all_allowed:
                 pending_list = [
                     {
                         "action_id": p.action_id,
@@ -1249,124 +1205,101 @@ class AgentOrchestrator:
                         "risk_tier": p.risk_tier.value,
                         "reason": p.reason
                     }
-                    for p in batch_permission.pending_confirmations
+                    for p in batch_result.pending_confirmations
                 ]
-                
-                for call_id, name, args in validated_tool_calls:
-                    self.memory_store.record_tool_call_audit(
-                        call_id=call_id,
-                        turn_id=turn_id,
-                        tool_name=name,
-                        args=args,
-                        model_tier=model_tier,
-                        validation_result="valid",
-                        permission_result="blocked",
-                        executed=False,
-                        error="Action requires user confirmation",
-                        repair_attempt=repair_attempts.get(name, 0)
-                    )
-
-                logger.warning(
-                    "Tool execution blocked by safety permission gate. %d action(s) require confirmation. Details: %s",
-                    len(pending_list), pending_list
-                )
-                actions_summary = ", ".join([f"'{p['tool']}' (Risk: {p['risk_tier']})" for p in pending_list])
-                confirm_response = f"Confirmation Required: The action requires user approval before executing: {actions_summary}."
-
-                return OrchestratorResult(
-                    response=confirm_response,
-                    model=model,
-                    provider="ollama",
-                    status="confirmation_required",
-                    session_id=session_id,
-                    route_reason=route_reason,
-                    fallback_used=False,
-                    tools_used=tools_used,
-                    pending_confirmations=pending_list
-                )
-
-            # All tools approved / allowed -> append assistant message
-            if isinstance(message_obj, dict):
-                messages.append(message_obj)
-            else:
-                assistant_msg = {
-                    "role": "assistant",
-                    "content": content,
-                    "tool_calls": []
+                yield {
+                    "event": "confirmation_required",
+                    "data": {
+                        "status": "confirmation_required",
+                        "pending_confirmations": pending_list,
+                        "session_id": session_id,
+                        "model": model,
+                        "provider": provider.name
+                    }
                 }
-                for tc in tool_calls:
-                    if isinstance(tc, dict):
-                        assistant_msg["tool_calls"].append(tc)
-                    else:
-                        func_obj = getattr(tc, "function", None)
-                        assistant_msg["tool_calls"].append({
-                            "function": {
-                                "name": getattr(func_obj, "name", ""),
-                                "arguments": getattr(func_obj, "arguments", {})
-                            }
-                        })
-                messages.append(assistant_msg)
+                return
 
-            # 6. Execute tools (Native or MCP) & Record audit log
-            for call_id, fn_name, fn_args in validated_tool_calls:
-                total_turn_tool_calls += 1
-                tool_turn_counts[fn_name] = tool_turn_counts.get(fn_name, 0) + 1
+            messages.append({"role": "assistant", "content": content or "", "tool_calls": tool_calls})
+            for tc in normalized_tool_calls:
+                t_name = tc["name"]
+                t_args = tc["args"]
+                t_id = tc["id"]
 
-                if self.mcp_manager.is_mcp_tool(fn_name):
-                    logger.info("Executing MCP tool '%s'", fn_name)
-                    tool_output = await self.mcp_manager.call_tool(fn_name, fn_args)
-                else:
-                    logger.info("Executing Native tool '%s'", fn_name)
-                    tool_output = execute_tool(fn_name, fn_args)
+                call_history.record(t_name, t_args)
+                yield {"event": "tool_start", "data": {"tool": t_name, "args": t_args}}
 
-                self.memory_store.record_tool_call_audit(
-                    call_id=call_id,
-                    turn_id=turn_id,
-                    tool_name=fn_name,
-                    args=fn_args,
-                    model_tier=model_tier,
-                    validation_result="valid",
-                    permission_result="allowed",
-                    executed=True,
-                    error=None,
-                    repair_attempt=repair_attempts.get(fn_name, 0)
+                schema = get_tool_schema(t_name)
+                val_result = await validate_tool_call(
+                    tool_name=t_name,
+                    raw_args=t_args,
+                    schema=schema,
+                    repair_attempt=0
                 )
+                if not val_result.valid:
+                    result_str = f"Validation Error for {t_name}: {val_result.error}"
+                    is_ok = False
+                else:
+                    try:
+                        if self.mcp_manager.is_mcp_tool(t_name):
+                            result_str = await self.mcp_manager.call_tool(t_name, val_result.args or t_args)
+                        else:
+                            result_str = execute_tool(t_name, val_result.args or t_args)
+                        is_ok = not str(result_str).startswith("Error")
+                    except Exception as ex:
+                        result_str = f"Error executing {t_name}: {ex}"
+                        is_ok = False
 
-                tools_used.append({
-                    "tool": fn_name,
-                    "args": fn_args,
-                    "result": tool_output
+                tool_item = {
+                    "tool": t_name,
+                    "args": t_args,
+                    "status": "success" if is_ok else "error",
+                    "result": result_str[:2000] if isinstance(result_str, str) else result_str
+                }
+                tools_used.append(tool_item)
+                yield {"event": "tool_end", "data": tool_item}
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": t_id,
+                    "name": t_name,
+                    "content": result_str
                 })
 
-                tool_dict = {
-                    "role": "tool",
-                    "name": fn_name,
-                    "content": tool_output
-                }
-                messages.append(tool_dict)
-                self.memory_store.append_message(session_id, role="tool", content=tool_output, name=fn_name)
+    async def _run_openrouter_stream_loop(
+        self,
+        session_id: str,
+        conversation_messages: list[dict[str, Any]],
+        model: str,
+        system_prompt: str,
+        route_reason: str = "Cloud OpenRouter execution",
+        active_skills: Optional[list[str]] = None,
+        compaction_info: Optional[dict] = None
+    ):
+        messages = [{"role": "system", "content": system_prompt}] + conversation_messages
+        stream_gen = self.openrouter_client.chat_stream(messages=messages, model=model)
 
-        logger.warning("Max tool iterations reached (%d). Requesting final summary.", max_iterations)
-        final_response = await self.ollama_client.chat(
-            model=model,
-            messages=messages
-        )
-        final_content = ""
-        if isinstance(final_response, dict):
-            final_content = final_response.get("message", {}).get("content", "")
-        else:
-            final_content = getattr(final_response.message, "content", "")
+        done_event = None
+        async for ev in stream_gen:
+            if ev.get("type") == "token":
+                yield {"event": "token", "data": {"delta": ev["delta"]}}
+            elif ev.get("type") == "done":
+                done_event = ev
 
-        self.memory_store.append_message(session_id, role="assistant", content=final_content)
-
-        return OrchestratorResult(
-            response=final_content,
-            model=model,
-            provider="ollama",
-            status="completed",
-            session_id=session_id,
-            route_reason=route_reason,
-            fallback_used=False,
-            tools_used=tools_used
-        )
-
+        content = done_event.get("content", "") if done_event else ""
+        self.memory_store.append_message(session_id, role="assistant", content=content)
+        self._synthesize_voice(content)
+        yield {
+            "event": "done",
+            "data": {
+                "response": content,
+                "model": model,
+                "provider": "openrouter",
+                "status": "completed",
+                "session_id": session_id,
+                "route_reason": route_reason,
+                "fallback_used": False,
+                "compaction_performed": compaction_info,
+                "active_skills": active_skills or [],
+                "tools_used": []
+            }
+        }

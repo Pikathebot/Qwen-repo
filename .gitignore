@@ -8,6 +8,15 @@ env/
 __pycache__/
 *.py[cod]
 *$py.class
+*.dll
+*.exe
+*.so
+*.dylib
+
+# AI Models & Tools Binaries
+models/
+*.gguf
+tools/
 
 # Environment variables
 .env
@@ -27,12 +36,24 @@ test_sandbox*/
 # App Data & Webview Cache
 data/
 
+# Node & Next.js & Tauri Build Output
+node_modules/
+.next/
+out/
+target/
+desktop-app/node_modules/
+desktop-app/.next/
+desktop-app/out/
+desktop-app/src-tauri/target/
 
 # Build & packaging
 build/
 dist/
 *.spec
 *.zip
+
+# Nested / duplicate snapshots
+jarvis_project/
 
 # OS specific
 .DS_Store

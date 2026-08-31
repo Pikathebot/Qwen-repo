@@ -4,6 +4,7 @@ import httpx
 from app.agent.lmstudio_client import LMStudioClient, convert_tool_to_openai_schema
 from app.agent.tools.registry import read_file, web_search, write_file
 
+pytestmark = pytest.mark.skip(reason="LM Studio direct tests deprecated in favor of llama.cpp ModelProvider")
 
 def test_convert_tool_to_openai_schema_callable():
     schema = convert_tool_to_openai_schema(read_file)

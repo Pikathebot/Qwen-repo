@@ -66,3 +66,81 @@ class OpenRouterClient:
 
         data = response.json()
         return data
+
+    async def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float = 0.7,
+        timeout: float = 60.0
+    ):
+        """
+        Stream chat completion tokens from OpenRouter API.
+        Yields events:
+        - {"type": "token", "delta": str}
+        - {"type": "done", "content": str}
+        """
+        if not self.is_configured:
+            raise ValueError("OPENROUTER_API_KEY is not configured in environment/.env.")
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/jarvis-assistant",
+            "X-Title": "Local Jarvis Assistant",
+        }
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True,
+        }
+
+        url = f"{self.base_url}/chat/completions"
+        logger.info("Streaming request from OpenRouter model '%s'", model)
+
+        import json
+        accumulated_content = []
+
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            try:
+                async with client.stream("POST", url, json=payload, headers=headers) as response:
+                    if response.status_code != 200:
+                        err_body = await response.aread()
+                        raise RuntimeError(f"OpenRouter streaming error HTTP {response.status_code}: {err_body.decode('utf-8', errors='ignore')}")
+
+                    async for line in response.aiter_lines():
+                        if not line:
+                            continue
+                        if line.startswith("data: "):
+                            raw_data = line[6:].strip()
+                            if raw_data == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(raw_data)
+                            except Exception:
+                                continue
+
+                            choices = chunk.get("choices", [])
+                            if not choices:
+                                continue
+                            delta = choices[0].get("delta", {})
+                            content_delta = delta.get("content")
+                            if content_delta:
+                                accumulated_content.append(content_delta)
+                                yield {"type": "token", "delta": content_delta}
+
+            except httpx.TimeoutException:
+                logger.error("OpenRouter stream timed out after %.1fs", timeout)
+                raise RuntimeError(f"OpenRouter stream timed out after {timeout}s.")
+            except Exception as e:
+                logger.error("OpenRouter streaming error: %s", e)
+                raise RuntimeError(f"OpenRouter streaming connection error: {e}")
+
+        final_text = "".join(accumulated_content)
+        yield {
+            "type": "done",
+            "content": final_text
+        }
+

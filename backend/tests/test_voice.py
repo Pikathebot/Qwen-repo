@@ -105,18 +105,19 @@ async def test_voice_transcribe_endpoint():
 @pytest.mark.anyio
 async def test_chat_with_wake_word_prefix():
     """Verify that a prompt starting with 'Jarvis, ...' executes smoothly and strips wake word."""
+    from unittest.mock import AsyncMock, patch
+    from app.agent.llamacpp_provider import LlamaCppProvider
+
     mock_resp = {
         "message": {
             "role": "assistant",
-            "content": "HELLO_VOICE_CONFIRMED"
-        }
+            "content": "HELLO_VOICE_CONFIRMED",
+            "tool_calls": None
+        },
+        "raw": {}
     }
-    class FakeOllama:
-        async def chat(self, *args, **kwargs):
-            return mock_resp
-
-    from unittest.mock import patch
-    with patch("app.main.get_ollama_client", return_value=FakeOllama()):
+    with patch.object(LlamaCppProvider, "chat", new_callable=AsyncMock) as mock_chat:
+        mock_chat.return_value = mock_resp
         payload = {
             "message": "Jarvis, say 'HELLO_VOICE_CONFIRMED'",
             "model": "qwen2.5:0.5b"

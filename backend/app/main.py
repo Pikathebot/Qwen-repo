@@ -1,7 +1,13 @@
+import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Optional
+from alembic.config import Config
+from alembic import command
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 import ollama
 
@@ -10,6 +16,8 @@ from app.agent.orchestrator import AgentOrchestrator
 from app.agent.model_router import ModelRouter
 from app.agent.openrouter_client import OpenRouterClient
 from app.agent.lmstudio_client import LMStudioClient
+from app.agent.provider_factory import get_model_provider
+from app.agent.runtime_process_manager import get_runtime_process_manager
 from app.agent.reliability_monitor import ReliabilityMonitor
 from app.governor.resource_governor import (
     ResourceGovernor,
@@ -36,33 +44,44 @@ logging.basicConfig(
 )
 logger = logging.getLogger("jarvis")
 
+
+def run_db_migrations() -> None:
+    """Run pending Alembic database migrations synchronously in a worker thread."""
+    try:
+        backend_dir = Path(__file__).resolve().parent.parent
+        alembic_ini_path = backend_dir / "alembic.ini"
+        if alembic_ini_path.exists():
+            alembic_cfg = Config(str(alembic_ini_path))
+            alembic_cfg.set_main_option("script_location", str(backend_dir / "alembic"))
+            alembic_cfg.set_main_option("sqlalchemy.url", settings.database_url)
+            command.upgrade(alembic_cfg, "head")
+            logger.info("Database migrations applied successfully.")
+        else:
+            logger.warning("alembic.ini not found at %s, skipping automatic migration.", alembic_ini_path)
+    except Exception as e:
+        logger.error("Error applying database migrations: %s", e)
+
+
 # Initialize global subsystems
 async def auto_unload_models() -> bool:
-    """Automatically evicts active models from GPU VRAM across both Ollama and LM Studio when host enters heavy load."""
+    """Automatically evicts active models from GPU VRAM by stopping llama-server and resetting fallback runtimes."""
     success = True
-    # 1. Evict from Ollama
-    ollama_client = get_ollama_client()
+    # 1. Stop llama-server process (Primary local runtime - 100% process-based VRAM unload)
     try:
-        ps_res = await ollama_client.ps()
-        models = ps_res.get("models", []) if isinstance(ps_res, dict) else getattr(ps_res, "models", [])
-        for m in models:
-            name = m.get("name") if isinstance(m, dict) else getattr(m, "model", getattr(m, "name", str(m)))
-            if name:
-                await ollama_client.generate(model=name, prompt="", keep_alive=0)
-        await ollama_client.generate(model=settings.ollama_model, prompt="", keep_alive=0)
-        logger.info("Governor auto-unload: Ollama model(s) evicted from VRAM.")
+        pm = get_runtime_process_manager()
+        await pm.stop()
+        logger.info("Governor auto-unload: llama-server process terminated to release GPU VRAM.")
+    except Exception as e:
+        logger.warning("Error stopping llama-server on auto-unload: %s", e)
+        success = False
+
+    # 2. Evict fallback Ollama if running
+    try:
+        ollama_provider = get_model_provider("ollama")
+        await ollama_provider.unload_model()
+        logger.info("Governor auto-unload: Ollama keep-alive cleared.")
     except Exception as e:
         logger.debug("Ollama auto-unload error: %s", e)
-
-    # 2. Evict from LM Studio via official CLI
-    lmstudio_client = get_lmstudio_client()
-    try:
-        lm_res = await lmstudio_client.unload_model(settings.lmstudio_model)
-        if not lm_res:
-            success = False
-    except Exception as e:
-        logger.warning("LM Studio auto-unload error: %s", e)
-        success = False
 
     return success
 
@@ -104,9 +123,14 @@ chatterbox_engine = ChatterboxEngine(governor=governor)
 async def lifespan(app: FastAPI):
     """Lifespan context manager to start/stop Resource Governor, Process Watcher, MCP servers, and Voice engine."""
     logger.info("Starting up Jarvis Assistant backend services...")
+
+    # Run database migrations in background thread (non-blocking for async event loop)
+    await asyncio.to_thread(run_db_migrations)
+
     if settings.governor_enabled:
         await governor.start()
         await process_watcher.start(governor)
+
     
     # Connect MCP servers
     try:
@@ -153,8 +177,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-UI_DIR = Path(__file__).resolve().parent.parent.parent / "desktop" / "ui"
-if UI_DIR.exists():
+def _get_ui_directory() -> Optional[Path]:
+    import sys
+    candidates = []
+    if getattr(sys, "frozen", False):
+        if hasattr(sys, "_MEIPASS"):
+            candidates.append(Path(sys._MEIPASS) / "desktop" / "ui")
+        candidates.append(Path(sys.executable).resolve().parent / "desktop" / "ui")
+    candidates.extend([
+        Path(__file__).resolve().parent.parent.parent / "desktop" / "ui",
+        Path(__file__).resolve().parent.parent / "desktop" / "ui",
+        Path.cwd() / "desktop" / "ui",
+    ])
+    for c in candidates:
+        if c.exists() and (c / "index.html").exists():
+            return c
+    return None
+
+UI_DIR = _get_ui_directory()
+if UI_DIR:
     app.mount("/ui", StaticFiles(directory=str(UI_DIR), html=True), name="ui")
 
 
@@ -270,35 +311,29 @@ class GovernorStatusResponse(BaseModel):
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Health check endpoint verifying backend status, LM Studio, Ollama, governor, MCP, skills, and voice."""
-    # 1. Check Ollama
-    ollama_connected = False
+    """Health check endpoint verifying backend status, llama.cpp, Ollama, governor, MCP, skills, and voice."""
+    primary_provider = get_model_provider()
+    primary_connected = await primary_provider.health_check()
     available_models: list[str] = []
-    ollama_client = get_ollama_client()
 
+    if primary_connected:
+        try:
+            available_models = await primary_provider.list_models()
+        except Exception:
+            available_models = []
+
+    # Check Ollama as fallback
+    ollama_connected = False
     try:
-        models_response = await ollama_client.list()
-        models_list = models_response.get("models", []) if isinstance(models_response, dict) else getattr(models_response, "models", [])
-        for m in models_list:
-            name = m.get("name") if isinstance(m, dict) else getattr(m, "model", getattr(m, "name", str(m)))
-            if name:
-                available_models.append(name)
-        ollama_connected = True
-    except Exception as e:
-        logger.warning("Failed to connect to Ollama at %s: %s", settings.ollama_host, e)
+        ollama_provider = get_model_provider("ollama")
+        ollama_connected = await ollama_provider.health_check()
+    except Exception:
+        pass
 
-    # 2. Check LM Studio
-    lmstudio_client = get_lmstudio_client()
-    lmstudio_connected = await lmstudio_client.is_available()
-    if lmstudio_connected:
-        lm_models = await lmstudio_client.list_models()
-        for lmm in lm_models:
-            if lmm not in available_models:
-                available_models.append(lmm)
+    lmstudio_connected = False
 
-    active_backend = getattr(settings, "active_model_backend", "bonsai").lower().strip()
-    configured_model = settings.lmstudio_model if active_backend == "bonsai" else settings.ollama_model
-    primary_connected = lmstudio_connected if active_backend == "bonsai" else ollama_connected
+    active_backend = getattr(settings, "model_runtime", "llama_cpp")
+    configured_model = settings.llamacpp_main_model_path if active_backend == "llama_cpp" else settings.ollama_model
 
     throttled, _ = await governor.is_throttled()
     openrouter_client = get_openrouter_client()
@@ -307,7 +342,7 @@ async def health_check():
     skills = skills_loader.list_skills()
 
     return HealthResponse(
-        status="ok" if primary_connected and not throttled else "degraded",
+        status="ok" if not throttled else "degraded",
         active_backend=active_backend,
         configured_model=configured_model,
         lmstudio_base_url=settings.lmstudio_base_url,
@@ -318,7 +353,7 @@ async def health_check():
         ollama_model=settings.ollama_model,
         available_models=available_models,
         governor_throttled=throttled,
-        openrouter_configured=openrouter_client.is_configured,
+        openrouter_configured=openrouter_client.is_configured and settings.openrouter_enabled,
         active_sessions_count=len(sessions),
         active_mcp_servers_count=len([s for s in mcp_servers if s["connected"]]),
         available_skills_count=len(skills),
@@ -610,45 +645,23 @@ class UnloadModelRequest(BaseModel):
 
 @app.post("/models/unload")
 async def unload_models(req: Optional[UnloadModelRequest] = None):
-    """Immediately evicts loaded models from GPU VRAM across both Ollama and LM Studio."""
-    ollama_client = get_ollama_client()
-    lmstudio_client = get_lmstudio_client()
+    """Immediately evicts loaded models from GPU VRAM by terminating llama-server process and clearing Ollama."""
     unloaded_models = []
-    target_model = req.model_name if req and req.model_name else None
-
-    # 1. Unload from Ollama
+    # 1. Stop llama-server (Primary runtime)
     try:
-        if target_model:
-            await ollama_client.generate(model=target_model, prompt="", keep_alive=0)
-            unloaded_models.append(target_model)
-        else:
-            try:
-                ps_res = await ollama_client.ps()
-                models = ps_res.get("models", []) if isinstance(ps_res, dict) else getattr(ps_res, "models", [])
-                for m in models:
-                    name = m.get("name") if isinstance(m, dict) else getattr(m, "model", getattr(m, "name", str(m)))
-                    if name:
-                        await ollama_client.generate(model=name, prompt="", keep_alive=0)
-                        unloaded_models.append(name)
-            except Exception:
-                pass
-
-            if settings.ollama_model not in unloaded_models:
-                try:
-                    await ollama_client.generate(model=settings.ollama_model, prompt="", keep_alive=0)
-                    unloaded_models.append(settings.ollama_model)
-                except Exception:
-                    pass
+        pm = get_runtime_process_manager()
+        await pm.stop()
+        unloaded_models.append(f"llama_cpp:{settings.llamacpp_main_model_path}")
     except Exception as e:
-        logger.warning("Error unloading model from Ollama: %s", e)
+        logger.warning("Error unloading llama-server: %s", e)
 
-    # 2. Unload from LM Studio
+    # 2. Unload from Ollama if running
     try:
-        target_lm = target_model or settings.lmstudio_model
-        await lmstudio_client.unload_model(target_lm)
-        unloaded_models.append(f"lmstudio:{target_lm}")
+        ollama_provider = get_model_provider("ollama")
+        await ollama_provider.unload_model(req.model_name if req else None)
+        unloaded_models.append("ollama")
     except Exception as e:
-        logger.warning("Error unloading model from LM Studio: %s", e)
+        logger.debug("Error unloading Ollama: %s", e)
 
     logger.info("Unloaded models from VRAM: %s", unloaded_models)
     return {
@@ -660,31 +673,26 @@ async def unload_models(req: Optional[UnloadModelRequest] = None):
 
 class LoadModelRequest(BaseModel):
     model_name: Optional[str] = None
-    backend: Optional[str] = None  # "bonsai" (lmstudio) or "hermes3" (ollama)
+    backend: Optional[str] = None
 
 
 @app.post("/models/load")
 async def load_model_endpoint(req: Optional[LoadModelRequest] = None):
     """Loads/warms up a model into GPU VRAM wrapped with governor.activity(ActivityType.MODEL_LOADING)."""
-    target_backend = (req.backend if req and req.backend else getattr(settings, "active_model_backend", "bonsai")).lower().strip()
+    target_backend = (req.backend if req and req.backend else getattr(settings, "model_runtime", "llama_cpp")).lower().strip()
     target_model = (
         req.model_name
         if req and req.model_name
-        else (settings.lmstudio_model if target_backend == "bonsai" else settings.ollama_model)
+        else ("main" if target_backend == "llama_cpp" else settings.ollama_main_model)
     )
 
     async with governor.activity(ActivityType.MODEL_LOADING, label=target_model):
-        if target_backend == "bonsai":
-            lmstudio_client = get_lmstudio_client()
-            success = await lmstudio_client.load_model(target_model)
+        if target_backend == "llama_cpp":
+            pm = get_runtime_process_manager()
+            success = await pm.ensure_running(target_model)
         else:
-            ollama_client = get_ollama_client()
-            try:
-                await ollama_client.generate(model=target_model, prompt="", keep_alive="10m")
-                success = True
-            except Exception as e:
-                logger.warning("Ollama load/warmup error: %s", e)
-                success = False
+            ollama_provider = get_model_provider("ollama")
+            success = await ollama_provider.health_check()
 
     return {
         "success": success,
@@ -698,7 +706,7 @@ async def load_model_endpoint(req: Optional[LoadModelRequest] = None):
 async def chat(request: ChatRequest):
     """
     Main chat endpoint with Voice Wake-Word, MCP Integration, Dynamic Skills Loading,
-    SQLite Memory, Model Routing (LM Studio Bonsai default vs Ollama Hermes rollback),
+    SQLite Memory, Model Routing (llama.cpp primary default vs Ollama fallback),
     Resource Governor gating, and Safety Permissions.
     """
     # Check for wake word in message
@@ -717,7 +725,7 @@ async def chat(request: ChatRequest):
                 detail=f"Resource Governor active: Request paused/rejected due to heavy system load ({reason}). Please retry once resource load subsides."
             )
 
-    # 2. Agent Orchestration with LM Studio, Ollama, OpenRouter, Memory, Skills, and MCP Tools
+    # 2. Agent Orchestration with ModelProvider, Memory, Skills, and MCP Tools
     ollama_client = get_ollama_client()
     lmstudio_client = get_lmstudio_client()
     openrouter_client = get_openrouter_client()
@@ -759,23 +767,70 @@ async def chat(request: ChatRequest):
             pending_confirmations=result.pending_confirmations
         )
 
-    except ollama.ResponseError as e:
-        logger.error("Ollama ResponseError: %s (status_code=%s)", e.error, e.status_code)
-        if e.status_code == 404:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Model not found in Ollama. Pull it with `ollama pull <model_name>`."
-            )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Ollama error: {e.error}"
-        )
     except Exception as e:
         logger.error("Unexpected error in chat endpoint: %s", str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Chat execution error: {str(e)}"
         )
+
+
+@app.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """
+    High-speed Server-Sent Events (SSE) streaming chat endpoint.
+    Emits real-time token events, tool execution updates, and final metadata.
+    """
+    detected, wake_word, cleaned_query = wake_detector.detect_in_text(request.message)
+    active_message = cleaned_query if detected and cleaned_query else request.message
+
+    if settings.governor_enabled:
+        is_healthy, reason = await governor.wait_until_healthy(
+            timeout_seconds=settings.governor_queue_timeout_seconds
+        )
+        if not is_healthy:
+            logger.warning("Rejecting chat stream request due to high system load: %s", reason)
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Resource Governor active: Request paused/rejected due to heavy system load ({reason}). Please retry once resource load subsides."
+            )
+
+    ollama_client = get_ollama_client()
+    lmstudio_client = get_lmstudio_client()
+    openrouter_client = get_openrouter_client()
+    orchestrator = AgentOrchestrator(
+        ollama_client=ollama_client,
+        lmstudio_client=lmstudio_client,
+        openrouter_client=openrouter_client,
+        memory_store=memory_store,
+        compactor=compactor,
+        skills_loader=skills_loader,
+        mcp_manager=mcp_manager,
+        reliability_monitor=reliability_monitor,
+        tts_engine=chatterbox_engine
+    )
+
+    async def event_generator():
+        try:
+            async with governor.activity(ActivityType.INFERENCING, label=request.session_id or "chat_turn"):
+                async for event in orchestrator.run_stream(
+                    user_message=active_message,
+                    session_id=request.session_id,
+                    requested_mode=request.mode,
+                    requested_model=request.model,
+                    system_prompt=request.system_prompt,
+                    approved_action_ids=request.approved_action_ids,
+                    chat_mode=request.chat_mode
+                ):
+                    event_type = event.get("event", "message")
+                    data_json = json.dumps(event.get("data", {}))
+                    yield f"event: {event_type}\ndata: {data_json}\n\n"
+        except Exception as e:
+            logger.error("Error in streaming response generator: %s", e)
+            err_data = json.dumps({"error": str(e)})
+            yield f"event: error\ndata: {err_data}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 if __name__ == "__main__":

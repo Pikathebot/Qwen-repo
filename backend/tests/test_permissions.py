@@ -246,6 +246,13 @@ async def test_integration_confirmation_required_blocks_and_resumes():
         assert any(t["tool"] == "write_file" for t in data2["tools_used"])
         # Verify file WAS written
         assert os.path.exists(test_file)
+        
+        assert res2.status_code == 200
+        data2 = res2.json()
+        assert data2["status"] == "completed"
+        assert any(t["tool"] == "write_file" for t in data2["tools_used"])
+        # Verify file WAS written
+        assert os.path.exists(test_file)
     finally:
         if os.path.exists(test_file):
             os.remove(test_file)

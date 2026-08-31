@@ -5,6 +5,21 @@ import sqlite3
 import time
 from typing import Any, Optional
 
+from app.database.models import (
+    Project,
+    Artifact,
+    Memory,
+    Document,
+    DocumentChunk,
+    ToolCall,
+    AgentRun,
+    Session as DBSession,
+    Message,
+    CompactionEvent,
+    ToolCallAudit,
+    ReliabilityEvent,
+)
+
 logger = logging.getLogger("jarvis.memory.store")
 
 
