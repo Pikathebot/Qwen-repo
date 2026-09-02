@@ -1,30 +1,6 @@
 export type MessageRole = "user" | "assistant" | "system" | "tool";
 
-export type ToolStatus = "pending" | "running" | "success" | "warning" | "error" | "blocked";
-
-export type PermissionTier = "LOW_RISK" | "CONFIRMATION_REQUIRED" | "HIGH_RISK";
-
-export type GovernorTier = "IDLE" | "LIGHT" | "MODERATE" | "HEAVY" | "CRITICAL" | "PAUSED";
-
-export type ModelRole = "MAIN" | "FAST" | "EMBED" | "RERANK" | "VISION";
-
-export interface DiffPayload {
-  filePath: string;
-  oldContent: string;
-  newContent: string;
-  additions?: number;
-  deletions?: number;
-}
-
-export interface PendingConfirmation {
-  action_id: string;
-  tool: string;
-  args: Record<string, unknown> | string;
-  risk_tier?: PermissionTier | string;
-  reason?: string;
-  diffPayload?: DiffPayload;
-  createdAt?: string;
-}
+export type ToolStatus = "running" | "success" | "error";
 
 export interface ToolStep {
   id: string;
@@ -32,8 +8,14 @@ export interface ToolStep {
   args: Record<string, unknown>;
   status: ToolStatus;
   result?: unknown;
-  latency_ms?: number;
-  summary?: string;
+}
+
+export interface PendingConfirmation {
+  action_id: string;
+  tool: string;
+  args: Record<string, unknown> | string;
+  risk_tier?: string;
+  reason?: string;
 }
 
 export interface Message {
@@ -47,8 +29,6 @@ export interface Message {
   toolsUsed?: Array<Record<string, unknown>>;
   activeSkills?: string[];
   pendingConfirmations?: PendingConfirmation[];
-  contextChips?: Array<{ type: "file" | "memory" | "skill" | "model" | "tool"; label: string }>;
-  isStreaming?: boolean;
 }
 
 export interface Project {
@@ -61,8 +41,6 @@ export interface Project {
   is_active: boolean;
   created_at: string;
   updated_at: string;
-  chunks_count?: number;
-  skills_active?: string[];
 }
 
 export interface Session {
@@ -73,7 +51,6 @@ export interface Session {
   updated_at?: string;
   message_count?: number;
   last_message?: string;
-  title?: string;
 }
 
 export interface Attachment {
@@ -114,46 +91,9 @@ export interface ProjectFile {
   size_bytes: number;
   is_dir: boolean;
   updated_at?: number | null;
-  status?: "unmodified" | "modified" | "pending_edit" | "accepted" | "rejected";
-  children?: ProjectFile[];
 }
 
-export interface MemoryItem {
-  id: string;
-  category: "Preference" | "Fact" | "Workflow" | "Project";
-  title: string;
-  content: string;
-  source?: string;
-  created_at: string;
-  updated_at?: string;
-}
 
-export interface SkillItem {
-  id: string;
-  name: string;
-  description: string;
-  isActive: boolean;
-  icon?: string;
-  toolsCount?: number;
-}
-
-export interface ModelInfo {
-  role: ModelRole;
-  name: string;
-  provider: string;
-  status: "online" | "offline" | "loading";
-  contextWindow: number;
-  quantization?: string;
-  vramUsageMb?: number;
-}
-
-export interface ModelTopology {
-  main: ModelInfo;
-  fast: ModelInfo;
-  embed: ModelInfo;
-  rerank: ModelInfo;
-  vision: ModelInfo;
-}
 
 export interface HealthResponse {
   status: "ok" | "degraded";
@@ -165,21 +105,15 @@ export interface HealthResponse {
   ollama_model?: string;
   active_sessions_count: number;
   voice_enabled?: boolean;
-  vram_used_mb?: number;
-  vram_total_mb?: number;
-  is_mock?: boolean;
 }
 
 export interface GovernorStatus {
-  status: "ok" | "degraded" | "throttled" | "paused" | "offline";
-  tier: GovernorTier;
+  status: "ok" | "degraded" | "throttled" | "paused";
   throttled: boolean;
   activeBackend: string;
   configuredModel: string;
   availableModels: string[];
   ollamaConnected: boolean;
-  vram_percent?: number;
-  system_load?: number;
 }
 
 export interface UnloadResponse {
@@ -291,11 +225,11 @@ export interface SSEAgentStatusEvent {
 export interface ActivityStep {
   id: string;
   timestamp: Date;
-  type: "status" | "tool_call" | "tool_result" | "permission_request" | "file_change";
+  type: "status" | "tool_call" | "tool_result";
   tool?: string;
-  status?: ToolStatus | string;
+  status?: string;
   args?: Record<string, unknown>;
-  result?: string | unknown;
+  result?: string;
   summary?: string;
   latency_ms?: number;
   truncated?: boolean;

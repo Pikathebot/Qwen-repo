@@ -1,11 +1,9 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { Message, ToolStep, PendingConfirmation, SSERetrievalContextEvent, ActivityStep, Attachment } from "@/lib/types";
+import { Message, ToolStep, PendingConfirmation } from "@/lib/types";
 import { streamChat } from "@/lib/sse-client";
 import { fetchSessionMessages, createNewSessionId } from "@/lib/api";
-import { MockAdapter } from "@/lib/mock-adapter";
-import { MOCK_MESSAGES, MOCK_ACTIVITY_STEPS, MOCK_RETRIEVAL_CONTEXT } from "@/lib/mock-data";
 
 export interface UseChatReturn {
   messages: Message[];
@@ -16,17 +14,16 @@ export interface UseChatReturn {
   error: string | null;
   selectedModel: string | null;
   setSelectedModel: (model: string | null) => void;
-  retrievalContext: SSERetrievalContextEvent | null;
-  activitySteps: ActivityStep[];
-  isMockMode: boolean;
+  retrievalContext: import("@/lib/types").SSERetrievalContextEvent | null;
+  activitySteps: import("@/lib/types").ActivityStep[];
   sendMessage: (
     content: string,
     approvedActionIds?: string[],
-    attachments?: Attachment[],
+    attachments?: import("@/lib/types").Attachment[],
     projectId?: string
   ) => Promise<void>;
   confirmAction: (actionId: string) => Promise<void>;
-  denyAction: (actionId?: string) => void;
+  denyAction: () => void;
   selectSession: (sessionId: string) => Promise<void>;
   newChat: () => void;
   abortStream: () => void;
@@ -34,16 +31,17 @@ export interface UseChatReturn {
 }
 
 export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
-  const [activeSessionId, setActiveSessionId] = useState<string>("session_gas_refactor_a41f");
-  const [messages, setMessages] = useState<Message[]>(MOCK_MESSAGES);
+  const [activeSessionId, setActiveSessionId] = useState<string>(createNewSessionId);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [pendingConfirmations, setPendingConfirmations] = useState<PendingConfirmation[]>([]);
-  const [retrievalContext, setRetrievalContext] = useState<SSERetrievalContextEvent | null>(MOCK_RETRIEVAL_CONTEXT);
-  const [activitySteps, setActivitySteps] = useState<ActivityStep[]>(MOCK_ACTIVITY_STEPS);
+  const [retrievalContext, setRetrievalContext] = useState<import("@/lib/types").SSERetrievalContextEvent | null>(null);
+  const [activitySteps, setActivitySteps] = useState<import("@/lib/types").ActivityStep[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [selectedModel, setSelectedModel] = useState<string | null>("Qwen3-30B");
-  const [isMockMode, setIsMockMode] = useState<boolean>(true);
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
+
+
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const lastUserPromptRef = useRef<string>("");
@@ -62,8 +60,6 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
     setActiveSessionId(newId);
     setMessages([]);
     setPendingConfirmations([]);
-    setRetrievalContext(null);
-    setActivitySteps([]);
     setError(null);
     setIsLoading(false);
     setStreamingMessageId(null);
@@ -78,23 +74,17 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
 
     try {
       const history = await fetchSessionMessages(sessionId);
-      if (history && history.length > 0) {
-        setIsMockMode(false);
-        const converted: Message[] = history.map((m, idx) => ({
-          id: `msg_${sessionId}_${idx}_${Date.now()}`,
-          role: (m.role as "user" | "assistant" | "system") || "user",
-          content: (m.content as string) || "",
-          toolsUsed: (m.tools_used as Array<Record<string, unknown>>) || [],
-          createdAt: new Date(),
-        }));
-        setMessages(converted);
-      } else {
-        const mockMsgs = await MockAdapter.getMessages(sessionId);
-        setMessages(mockMsgs.length > 0 ? mockMsgs : []);
-      }
-    } catch {
-      const mockMsgs = await MockAdapter.getMessages(sessionId);
-      setMessages(mockMsgs.length > 0 ? mockMsgs : []);
+      const converted: Message[] = history.map((m, idx) => ({
+        id: `msg_${sessionId}_${idx}_${Date.now()}`,
+        role: (m.role as "user" | "assistant" | "system") || "user",
+        content: (m.content as string) || "",
+        toolsUsed: (m.tools_used as Array<Record<string, unknown>>) || [],
+        createdAt: new Date(),
+      }));
+      setMessages(converted);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to load session messages";
+      setError(msg);
     } finally {
       setIsLoading(false);
     }
@@ -113,7 +103,7 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
     async (
       content: string,
       approvedActionIds?: string[],
-      attachments?: Attachment[],
+      attachments?: import("@/lib/types").Attachment[],
       projectId?: string
     ) => {
       if (!content.trim() && !approvedActionIds?.length && (!attachments || attachments.length === 0)) return;
@@ -131,7 +121,6 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
           role: "user",
           content: content.trim(),
           createdAt: new Date(),
-          contextChips: attachments?.map((a) => ({ type: "file", label: a.filename })) || [],
         };
         setMessages((prev) => [...prev, userMsg]);
       }
@@ -143,7 +132,6 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
         content: "",
         toolSteps: [],
         createdAt: new Date(),
-        isStreaming: true,
       };
       setMessages((prev) => [...prev, assistantPlaceholder]);
       setStreamingMessageId(assistantMessageId);
@@ -163,6 +151,7 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
           attachments,
           signal: controller.signal,
           callbacks: {
+
             onToken: ({ delta }) => {
               setMessages((prev) =>
                 prev.map((msg) =>
@@ -172,11 +161,51 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
                 )
               );
             },
+            onToolDraft: ({ tool, args_delta }) => {
+              setMessages((prev) =>
+                prev.map((msg) => {
+                  if (msg.id !== assistantMessageId) return msg;
+                  const steps = msg.toolSteps || [];
+                  const existingIndex = steps.findIndex(
+                    (s) => s.tool === tool && s.status === "running"
+                  );
+                  if (existingIndex >= 0) {
+                    const updatedSteps = [...steps];
+                    const prevStep = updatedSteps[existingIndex];
+                    const prevRaw = typeof prevStep.args?.raw === "string" ? prevStep.args.raw : "";
+                    updatedSteps[existingIndex] = {
+                      ...prevStep,
+                      args: { raw: prevRaw + args_delta },
+                    };
+                    return { ...msg, toolSteps: updatedSteps };
+                  }
+                  const newStep: ToolStep = {
+                    id: `tool_${tool}_${Date.now()}`,
+                    tool,
+                    args: { raw: args_delta },
+                    status: "running",
+                  };
+                  return { ...msg, toolSteps: [...steps, newStep] };
+                })
+              );
+            },
             onToolStart: ({ tool, args }) => {
               setMessages((prev) =>
                 prev.map((msg) => {
                   if (msg.id !== assistantMessageId) return msg;
                   const steps = msg.toolSteps || [];
+                  const existingIndex = steps.findIndex(
+                    (s) => s.tool === tool && s.status === "running"
+                  );
+                  if (existingIndex >= 0) {
+                    const updatedSteps = [...steps];
+                    updatedSteps[existingIndex] = {
+                      ...updatedSteps[existingIndex],
+                      args: args || updatedSteps[existingIndex].args,
+                      status: "running",
+                    };
+                    return { ...msg, toolSteps: updatedSteps };
+                  }
                   const newStep: ToolStep = {
                     id: `tool_${tool}_${Date.now()}`,
                     tool,
@@ -201,14 +230,8 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
               );
             },
             onConfirmationRequired: ({ pending_confirmations, session_id }) => {
+
               setPendingConfirmations(pending_confirmations);
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === assistantMessageId
-                    ? { ...msg, pendingConfirmations: pending_confirmations }
-                    : msg
-                )
-              );
               if (session_id && session_id !== activeSessionId) {
                 setActiveSessionId(session_id);
               }
@@ -268,12 +291,10 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
                         provider,
                         toolsUsed: tools_used,
                         activeSkills: active_skills,
-                        isStreaming: false,
                       }
                     : msg
                 )
               );
-              setIsMockMode(false);
               onSessionsUpdated?.();
             },
             onError: ({ error: errText }) => {
@@ -281,57 +302,10 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
             },
           },
         });
-      } catch {
-        // Backend offline or error -> Fallback seamlessly to typed Mock Simulation
-        setIsMockMode(true);
-        try {
-          await MockAdapter.simulateStreamChat(
-            content.trim() || lastUserPromptRef.current,
-            activeSessionId,
-            {
-              onToken: ({ delta }) => {
-                setMessages((prev) =>
-                  prev.map((msg) =>
-                    msg.id === assistantMessageId
-                      ? { ...msg, content: msg.content + delta }
-                      : msg
-                  )
-                );
-              },
-              onRetrievalContext: (data) => setRetrievalContext(data),
-              onConfirmationRequired: ({ pending_confirmations }) => {
-                setPendingConfirmations(pending_confirmations);
-                setMessages((prev) =>
-                  prev.map((msg) =>
-                    msg.id === assistantMessageId
-                      ? { ...msg, pendingConfirmations: pending_confirmations }
-                      : msg
-                  )
-                );
-              },
-              onDone: ({ response, model, provider, tools_used, active_skills }) => {
-                setMessages((prev) =>
-                  prev.map((msg) =>
-                    msg.id === assistantMessageId
-                      ? {
-                          ...msg,
-                          content: response || msg.content,
-                          model,
-                          provider,
-                          toolsUsed: tools_used,
-                          activeSkills: active_skills,
-                          isStreaming: false,
-                        }
-                      : msg
-                  )
-                );
-                onSessionsUpdated?.();
-              },
-            },
-            controller.signal
-          );
-        } catch {
-          // ignore
+      } catch (err: unknown) {
+        if (!controller.signal.aborted) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          setError(errMsg);
         }
       } finally {
         setIsLoading(false);
@@ -345,47 +319,19 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
   const confirmAction = useCallback(
     async (actionId: string) => {
       setPendingConfirmations((prev) => prev.filter((p) => p.action_id !== actionId));
-      setMessages((prev) =>
-        prev.map((msg) => ({
-          ...msg,
-          pendingConfirmations: msg.pendingConfirmations?.filter(
-            (p) => p.action_id !== actionId
-          ),
-        }))
-      );
-
-      // System acknowledgment
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `sys_${Date.now()}`,
-          role: "system",
-          content: `Approved action ${actionId}. Patch applied and written to disk.`,
-          createdAt: new Date(),
-        },
-      ]);
+      await sendMessage("", [actionId]);
     },
-    []
+    [sendMessage]
   );
 
-  const denyAction = useCallback((actionId?: string) => {
-    setPendingConfirmations((prev) =>
-      actionId ? prev.filter((p) => p.action_id !== actionId) : []
-    );
-    setMessages((prev) =>
-      prev.map((msg) => ({
-        ...msg,
-        pendingConfirmations: actionId
-          ? msg.pendingConfirmations?.filter((p) => p.action_id !== actionId)
-          : [],
-      }))
-    );
+  const denyAction = useCallback(() => {
+    setPendingConfirmations([]);
     setMessages((prev) => [
       ...prev,
       {
         id: `sys_${Date.now()}`,
         role: "system",
-        content: `Action ${actionId || ""} was rejected by user.`,
+        content: "Action execution was denied by user.",
         createdAt: new Date(),
       },
     ]);
@@ -402,7 +348,6 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
     error,
     selectedModel,
     setSelectedModel,
-    isMockMode,
     sendMessage,
     confirmAction,
     denyAction,
@@ -412,3 +357,5 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
     clearError,
   };
 }
+
+
