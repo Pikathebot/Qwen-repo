@@ -14,6 +14,7 @@ from sqlmodel import Session, col, select
 from app.config import settings
 from app.database import get_session
 from app.database.models import Artifact, ArtifactVersion, Attachment, Project
+from app.services.artifact_service import ArtifactService
 
 logger = logging.getLogger("jarvis.routers.artifacts")
 
@@ -24,6 +25,10 @@ ALLOWED_EXTENSIONS = {
     ".cpp", ".h", ".hpp", ".cs", ".ini", ".csv", ".html", ".css", ".svg",
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf"
 }
+
+
+def get_artifact_service(db: Session = Depends(get_session)) -> ArtifactService:
+    return ArtifactService(db_engine=db.get_bind())
 
 
 # ==========================================
@@ -47,6 +52,7 @@ class ArtifactVersionResponse(BaseModel):
     version: int
     content: str
     summary: Optional[str] = None
+    created_by: str = "agent"
     created_at: datetime
 
 
@@ -54,34 +60,42 @@ class ArtifactResponse(BaseModel):
     id: str
     project_id: Optional[str] = None
     session_id: Optional[str] = None
+    conversation_id: Optional[str] = None
     name: str
     type: str
     content: str
     version: int
+    language: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
 
 class CreateArtifactRequest(BaseModel):
     name: str = Field(..., min_length=1)
-    type: str = Field(default="code", description="code/markdown/html/json/csv/python/svg")
+    type: str = Field(default="code", description="code/markdown/html/json/csv/python/svg/document/other")
     content: str
     project_id: Optional[str] = None
     session_id: Optional[str] = None
+    conversation_id: Optional[str] = None
+    language: Optional[str] = None
     summary: Optional[str] = None
+    created_by: str = "agent"
 
 
 class CreateArtifactVersionRequest(BaseModel):
     content: str
     summary: Optional[str] = None
+    created_by: str = "agent"
 
 
 class UpdateArtifactRequest(BaseModel):
     name: Optional[str] = None
     type: Optional[str] = None
     content: Optional[str] = None
+    language: Optional[str] = None
     summary: Optional[str] = None
-    create_new_version: bool = Field(default=False, description="Whether to snapshot new content as an incremented version")
+    created_by: str = "agent"
+    create_new_version: bool = Field(default=True, description="Whether to snapshot new content as an incremented version")
 
 
 class ProjectFileItem(BaseModel):
@@ -99,7 +113,6 @@ class ProjectFileItem(BaseModel):
 def sanitize_filename(filename: str) -> str:
     """Strip path traversal characters and dangerous special characters."""
     base = os.path.basename(filename).strip()
-    # Replace non-alphanumeric (except dot, dash, underscore) with underscore
     sanitized = re.sub(r"[^\w\.\-]", "_", base)
     if not sanitized or sanitized.startswith("."):
         sanitized = f"upload_{uuid.uuid4().hex[:8]}{sanitized}"
@@ -134,26 +147,19 @@ async def upload_file(
     project_id: Optional[str] = Form(None),
     db: Session = Depends(get_session),
 ) -> AttachmentResponse:
-    """
-    Securely uploads a user file attachment into the active project workspace
-    or global workspace directory with whitelist and size validation.
-    """
     raw_filename = file.filename or "uploaded_file.txt"
     ext = os.path.splitext(raw_filename)[1].lower()
 
-    # 1. Whitelist validation
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"File extension '{ext}' is not permitted. Allowed extensions: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
         )
 
-    # 2. Filename sanitization and path traversal prevention
     clean_name = sanitize_filename(raw_filename)
     target_dir = get_target_files_dir(project_id, db)
     dest_path = (target_dir / clean_name).resolve()
 
-    # Verify destination remains inside target_dir
     try:
         dest_path.relative_to(target_dir)
     except ValueError:
@@ -162,13 +168,11 @@ async def upload_file(
             detail="Invalid file path detected.",
         )
 
-    # If file already exists, create unique name
     if dest_path.exists():
         stem, extension = os.path.splitext(clean_name)
         clean_name = f"{stem}_{uuid.uuid4().hex[:6]}{extension}"
         dest_path = target_dir / clean_name
 
-    # 3. Read and enforce size limit
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
     content = await file.read()
     size_bytes = len(content)
@@ -179,11 +183,9 @@ async def upload_file(
             detail=f"File size ({size_bytes / (1024*1024):.2f}MB) exceeds maximum limit of {settings.max_upload_size_mb}MB.",
         )
 
-    # Write file to disk
     with open(dest_path, "wb") as f:
         f.write(content)
 
-    # 4. Record attachment in database
     attachment = Attachment(
         id=str(uuid.uuid4()),
         session_id=session_id,
@@ -217,7 +219,6 @@ def list_attachments(
     project_id: Optional[str] = Query(None),
     db: Session = Depends(get_session),
 ) -> list[AttachmentResponse]:
-    """List attachments, optionally filtered by session or project."""
     statement = select(Attachment)
     if session_id:
         statement = statement.where(Attachment.session_id == session_id)
@@ -246,7 +247,6 @@ def delete_attachment(
     delete_file: bool = Query(default=True),
     db: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    """Delete an attachment record and optionally remove the file from disk."""
     attachment = db.get(Attachment, attachment_id)
     if not attachment:
         raise HTTPException(
@@ -270,32 +270,35 @@ def delete_attachment(
 
 
 # ==========================================
-# Artifacts (AI Generated Outputs) Endpoints
+# Artifacts (AI Generated Outputs) Endpoints (Build Plan §15)
 # ==========================================
 
 @router.get("/artifacts", response_model=list[ArtifactResponse])
 def list_artifacts(
+    conversation_id: Optional[str] = Query(None),
     session_id: Optional[str] = Query(None),
     project_id: Optional[str] = Query(None),
-    db: Session = Depends(get_session),
+    type: Optional[str] = Query(None),
+    service: ArtifactService = Depends(get_artifact_service),
 ) -> list[ArtifactResponse]:
-    """List generated artifacts, optionally filtered by session or project."""
-    statement = select(Artifact)
-    if session_id:
-        statement = statement.where(Artifact.session_id == session_id)
-    if project_id:
-        statement = statement.where(Artifact.project_id == project_id)
-    statement = statement.order_by(col(Artifact.updated_at).desc())
-    artifacts = db.exec(statement).all()
+    """List artifacts with optional filtering by conversation_id, project_id, or type."""
+    artifacts = service.list_artifacts(
+        conversation_id=conversation_id,
+        session_id=session_id,
+        project_id=project_id,
+        type=type
+    )
     return [
         ArtifactResponse(
             id=a.id,
             project_id=a.project_id,
             session_id=a.session_id,
+            conversation_id=a.conversation_id or a.session_id,
             name=a.name,
             type=a.type,
             content=a.content,
             version=a.version,
+            language=a.language,
             created_at=a.created_at,
             updated_at=a.updated_at,
         )
@@ -306,57 +309,42 @@ def list_artifacts(
 @router.post("/artifacts", response_model=ArtifactResponse, status_code=status.HTTP_201_CREATED)
 def create_artifact(
     req: CreateArtifactRequest,
-    db: Session = Depends(get_session),
+    service: ArtifactService = Depends(get_artifact_service),
 ) -> ArtifactResponse:
-    """Create a new AI-generated artifact and snapshot version 1."""
-    now = datetime.utcnow()
-    artifact_id = str(uuid.uuid4())
-
-    artifact = Artifact(
-        id=artifact_id,
+    """Create a new artifact and initialize Version 1 in ArtifactVersion."""
+    conv_id = req.conversation_id or req.session_id
+    artifact = service.create_artifact(
+        name=req.name,
+        type=req.type,
+        content=req.content,
+        conversation_id=conv_id,
         project_id=req.project_id,
-        session_id=req.session_id,
-        name=req.name.strip(),
-        type=req.type.strip().lower(),
-        content=req.content,
-        version=1,
-        created_at=now,
-        updated_at=now,
+        language=req.language,
+        summary=req.summary,
+        created_by=req.created_by,
     )
-    db.add(artifact)
-
-    # Create initial version record
-    v1 = ArtifactVersion(
-        id=str(uuid.uuid4()),
-        artifact_id=artifact_id,
-        version=1,
-        content=req.content,
-        summary=req.summary or "Initial version",
-        created_at=now,
-    )
-    db.add(v1)
-
-    db.commit()
-    db.refresh(artifact)
-    logger.info("Created artifact '%s' (%s) v1", artifact.name, artifact.id)
-
     return ArtifactResponse(
         id=artifact.id,
         project_id=artifact.project_id,
         session_id=artifact.session_id,
+        conversation_id=artifact.conversation_id or artifact.session_id,
         name=artifact.name,
         type=artifact.type,
         content=artifact.content,
         version=artifact.version,
+        language=artifact.language,
         created_at=artifact.created_at,
         updated_at=artifact.updated_at,
     )
 
 
 @router.get("/artifacts/{artifact_id}", response_model=ArtifactResponse)
-def get_artifact(artifact_id: str, db: Session = Depends(get_session)) -> ArtifactResponse:
+def get_artifact(
+    artifact_id: str,
+    service: ArtifactService = Depends(get_artifact_service),
+) -> ArtifactResponse:
     """Retrieve detailed artifact metadata and current active content."""
-    artifact = db.get(Artifact, artifact_id)
+    artifact = service.get_artifact(artifact_id)
     if not artifact:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -366,159 +354,186 @@ def get_artifact(artifact_id: str, db: Session = Depends(get_session)) -> Artifa
         id=artifact.id,
         project_id=artifact.project_id,
         session_id=artifact.session_id,
+        conversation_id=artifact.conversation_id or artifact.session_id,
         name=artifact.name,
         type=artifact.type,
         content=artifact.content,
         version=artifact.version,
+        language=artifact.language,
         created_at=artifact.created_at,
         updated_at=artifact.updated_at,
     )
+
+
+@router.patch("/artifacts/{artifact_id}", response_model=ArtifactResponse)
+def patch_artifact(
+    artifact_id: str,
+    req: UpdateArtifactRequest,
+    service: ArtifactService = Depends(get_artifact_service),
+) -> ArtifactResponse:
+    """Update artifact content, auto-incrementing version and snapshotting previous content."""
+    try:
+        artifact = service.update_artifact(
+            artifact_id=artifact_id,
+            content=req.content,
+            name=req.name,
+            type=req.type,
+            language=req.language,
+            summary=req.summary,
+            created_by=req.created_by,
+        )
+        return ArtifactResponse(
+            id=artifact.id,
+            project_id=artifact.project_id,
+            session_id=artifact.session_id,
+            conversation_id=artifact.conversation_id or artifact.session_id,
+            name=artifact.name,
+            type=artifact.type,
+            content=artifact.content,
+            version=artifact.version,
+            language=artifact.language,
+            created_at=artifact.created_at,
+            updated_at=artifact.updated_at,
+        )
+    except KeyError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Artifact '{artifact_id}' not found.",
+        )
 
 
 @router.put("/artifacts/{artifact_id}", response_model=ArtifactResponse)
 def update_artifact(
     artifact_id: str,
     req: UpdateArtifactRequest,
-    db: Session = Depends(get_session),
+    service: ArtifactService = Depends(get_artifact_service),
 ) -> ArtifactResponse:
-    """Update artifact content or properties, optionally snapshotting an incremented version."""
-    artifact = db.get(Artifact, artifact_id)
-    if not artifact:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Artifact '{artifact_id}' not found.",
-        )
-
-    now = datetime.utcnow()
-    if req.name is not None:
-        artifact.name = req.name.strip()
-    if req.type is not None:
-        artifact.type = req.type.strip().lower()
-
-    if req.content is not None:
-        artifact.content = req.content
-        if req.create_new_version:
-            artifact.version += 1
-            ver = ArtifactVersion(
-                id=str(uuid.uuid4()),
-                artifact_id=artifact.id,
-                version=artifact.version,
-                content=req.content,
-                summary=req.summary or f"Version {artifact.version}",
-                created_at=now,
-            )
-            db.add(ver)
-
-    artifact.updated_at = now
-    db.add(artifact)
-    db.commit()
-    db.refresh(artifact)
-
-    return ArtifactResponse(
-        id=artifact.id,
-        project_id=artifact.project_id,
-        session_id=artifact.session_id,
-        name=artifact.name,
-        type=artifact.type,
-        content=artifact.content,
-        version=artifact.version,
-        created_at=artifact.created_at,
-        updated_at=artifact.updated_at,
-    )
+    """Backward compatible PUT endpoint alias for artifact updates."""
+    return patch_artifact(artifact_id, req, service)
 
 
 @router.delete("/artifacts/{artifact_id}")
-def delete_artifact(artifact_id: str, db: Session = Depends(get_session)) -> dict[str, Any]:
+def delete_artifact(
+    artifact_id: str,
+    service: ArtifactService = Depends(get_artifact_service),
+) -> dict[str, Any]:
     """Delete an artifact and cascade all associated version history."""
-    artifact = db.get(Artifact, artifact_id)
-    if not artifact:
+    deleted = service.delete_artifact(artifact_id)
+    if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Artifact '{artifact_id}' not found.",
         )
-
-    # Delete all versions
-    versions = db.exec(select(ArtifactVersion).where(ArtifactVersion.artifact_id == artifact_id)).all()
-    for v in versions:
-        db.delete(v)
-
-    db.delete(artifact)
-    db.commit()
     return {"deleted": True, "artifact_id": artifact_id}
 
 
 @router.get("/artifacts/{artifact_id}/versions", response_model=list[ArtifactVersionResponse])
 def list_artifact_versions(
     artifact_id: str,
-    db: Session = Depends(get_session),
+    service: ArtifactService = Depends(get_artifact_service),
 ) -> list[ArtifactVersionResponse]:
     """Retrieve full version history for an artifact ordered by version number."""
-    artifact = db.get(Artifact, artifact_id)
-    if not artifact:
+    try:
+        versions = service.list_versions(artifact_id)
+        return [
+            ArtifactVersionResponse(
+                id=v.id,
+                artifact_id=v.artifact_id,
+                version=v.version,
+                content=v.content,
+                summary=v.summary,
+                created_by=v.created_by,
+                created_at=v.created_at,
+            )
+            for v in versions
+        ]
+    except KeyError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Artifact '{artifact_id}' not found.",
         )
 
-    statement = select(ArtifactVersion).where(ArtifactVersion.artifact_id == artifact_id).order_by(col(ArtifactVersion.version).asc())
-    versions = db.exec(statement).all()
-    return [
-        ArtifactVersionResponse(
-            id=v.id,
-            artifact_id=v.artifact_id,
-            version=v.version,
-            content=v.content,
-            summary=v.summary,
-            created_at=v.created_at,
+
+@router.get("/artifacts/{artifact_id}/versions/{version}", response_model=ArtifactVersionResponse)
+def get_artifact_version(
+    artifact_id: str,
+    version: int,
+    service: ArtifactService = Depends(get_artifact_service),
+) -> ArtifactVersionResponse:
+    """Retrieve specific version snapshot content for an artifact."""
+    ver = service.get_version(artifact_id, version)
+    if not ver:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Version {version} not found for artifact '{artifact_id}'.",
         )
-        for v in versions
-    ]
+    return ArtifactVersionResponse(
+        id=ver.id,
+        artifact_id=ver.artifact_id,
+        version=ver.version,
+        content=ver.content,
+        summary=ver.summary,
+        created_by=ver.created_by,
+        created_at=ver.created_at,
+    )
+
+
+@router.post("/artifacts/{artifact_id}/restore/{version}", response_model=ArtifactResponse)
+def restore_artifact_version(
+    artifact_id: str,
+    version: int,
+    service: ArtifactService = Depends(get_artifact_service),
+) -> ArtifactResponse:
+    """Restore artifact content from a historical version."""
+    try:
+        restored = service.restore_version(artifact_id, version, created_by="user")
+        return ArtifactResponse(
+            id=restored.id,
+            project_id=restored.project_id,
+            session_id=restored.session_id,
+            conversation_id=restored.conversation_id or restored.session_id,
+            name=restored.name,
+            type=restored.type,
+            content=restored.content,
+            version=restored.version,
+            language=restored.language,
+            created_at=restored.created_at,
+            updated_at=restored.updated_at,
+        )
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Artifact '{artifact_id}' not found.")
+    except ValueError as ve:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
 
 
 @router.post("/artifacts/{artifact_id}/versions", response_model=ArtifactVersionResponse, status_code=status.HTTP_201_CREATED)
 def create_artifact_version(
     artifact_id: str,
     req: CreateArtifactVersionRequest,
-    db: Session = Depends(get_session),
+    service: ArtifactService = Depends(get_artifact_service),
 ) -> ArtifactVersionResponse:
-    """Create a new version for an artifact, updating the current artifact content."""
-    artifact = db.get(Artifact, artifact_id)
-    if not artifact:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Artifact '{artifact_id}' not found.",
+    """Create a new version for an artifact, updating active content."""
+    try:
+        updated = service.update_artifact(
+            artifact_id=artifact_id,
+            content=req.content,
+            summary=req.summary,
+            created_by=req.created_by,
         )
-
-    now = datetime.utcnow()
-    # Find next version number
-    existing_versions = db.exec(select(ArtifactVersion.version).where(ArtifactVersion.artifact_id == artifact_id)).all()
-    next_ver = (max(existing_versions) if existing_versions else artifact.version) + 1
-
-    new_ver = ArtifactVersion(
-        id=str(uuid.uuid4()),
-        artifact_id=artifact_id,
-        version=next_ver,
-        content=req.content,
-        summary=req.summary or f"Version {next_ver}",
-        created_at=now,
-    )
-    db.add(new_ver)
-
-    artifact.version = next_ver
-    artifact.content = req.content
-    artifact.updated_at = now
-    db.add(artifact)
-
-    db.commit()
-    db.refresh(new_ver)
-    return ArtifactVersionResponse(
-        id=new_ver.id,
-        artifact_id=new_ver.artifact_id,
-        version=new_ver.version,
-        content=new_ver.content,
-        summary=new_ver.summary,
-        created_at=new_ver.created_at,
-    )
+        ver = service.get_version(artifact_id, updated.version)
+        if not ver:
+            raise HTTPException(status_code=500, detail="Failed retrieving created version.")
+        return ArtifactVersionResponse(
+            id=ver.id,
+            artifact_id=ver.artifact_id,
+            version=ver.version,
+            content=ver.content,
+            summary=ver.summary,
+            created_by=ver.created_by,
+            created_at=ver.created_at,
+        )
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Artifact '{artifact_id}' not found.")
 
 
 # ==========================================
@@ -530,9 +545,6 @@ def list_project_files(
     project_id: str,
     db: Session = Depends(get_session),
 ) -> list[ProjectFileItem]:
-    """
-    List files in the project's 'files/' directory for the RightPanel Files tab.
-    """
     target_dir = get_target_files_dir(project_id, db)
     items: list[ProjectFileItem] = []
 

@@ -3,197 +3,402 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { useChat } from "@/hooks/useChat";
 import { useGovernor } from "@/hooks/useGovernor";
-import { Sidebar } from "@/components/Sidebar";
-import { ChatView } from "@/components/ChatView";
-import { Composer } from "@/components/Composer";
-import { GovernorPill } from "@/components/GovernorPill";
-import { SettingsDialog } from "@/components/SettingsDialog";
-import { RightPanel } from "@/components/RightPanel";
-import { fetchActiveProject, fetchArtifacts } from "@/lib/api";
+import { Sidebar } from "@/components/sidebar/Sidebar";
+import { CanvasHeader } from "@/components/conversation/CanvasHeader";
+import { MessageList } from "@/components/conversation/MessageList";
+import { Composer } from "@/components/conversation/Composer";
+import { IntelligencePanel } from "@/components/intelligence/IntelligencePanel";
+import { StatusFooter } from "@/components/footer/StatusFooter";
+import { HighRiskModal } from "@/components/modals/HighRiskModal";
+import { MemoryInspectorModal } from "@/components/modals/MemoryInspectorModal";
+import { SkillsBrowserModal } from "@/components/modals/SkillsBrowserModal";
+import { SettingsModal } from "@/components/modals/SettingsModal";
+import { SpotlightOverlay } from "@/components/modals/SpotlightOverlay";
+import { GlassPanel } from "@/components/ui/GlassPanel";
+import {
+  Project,
+  Session,
+  Artifact,
+  ProjectFile,
+  MemoryItem,
+  SkillItem,
+  PendingConfirmation,
+} from "@/lib/types";
+import {
+  fetchProjects,
+  fetchActiveProject,
+  fetchSessions,
+  fetchArtifacts,
+  fetchArtifactVersions,
+  fetchProjectFiles,
+  unloadModelsApi,
+} from "@/lib/api";
+import { MockAdapter } from "@/lib/mock-adapter";
 
 export default function Home() {
+  // Navigation & Panel states
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [rightPanelOpen, setRightPanelOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [chatMode, setChatMode] = useState<"WORKSPACE" | "SYSTEM">("WORKSPACE");
-  const [activeProjectId, setActiveProjectId] = useState<string | undefined>(undefined);
-  const [artifactsCount, setArtifactsCount] = useState<number>(0);
 
-  const governor = useGovernor(2000);
-  const chat = useChat();
+  // Modals
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [spotlightOpen, setSpotlightOpen] = useState(false);
+  const [highRiskConfirmation, setHighRiskConfirmation] = useState<PendingConfirmation | null>(null);
 
-  const syncWorkspaceState = useCallback(async () => {
+  // Workspace entity states
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [activeProject, setActiveProject] = useState<Project | null>(null);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
+  const [artifactVersions, setArtifactVersions] = useState<import("@/lib/types").ArtifactVersion[]>([]);
+  const [projectFiles, setProjectFiles] = useState<ProjectFile[]>([]);
+  const [memories, setMemories] = useState<MemoryItem[]>([]);
+  const [skills, setSkills] = useState<SkillItem[]>([]);
+
+  // System & Chat hooks
+  const governor = useGovernor(3000);
+  const chat = useChat(() => {
+    loadSessionsList(activeProject?.id);
+  });
+
+  // Load Projects & initial state
+  const loadInitialData = useCallback(async () => {
     try {
-      const activeProj = await fetchActiveProject();
-      setActiveProjectId(activeProj?.id);
-      const arts = await fetchArtifacts(chat.activeSessionId, activeProj?.id);
-      setArtifactsCount(arts.length);
+      const projData = await fetchProjects();
+      setProjects(projData);
+      const active = projData.find((p) => p.is_active) || projData[0] || null;
+      setActiveProject(active);
+      return active;
     } catch {
-      // ignore
+      // Offline fallback to MockAdapter
+      const mockProjects = await MockAdapter.getProjects();
+      setProjects(mockProjects);
+      const active = mockProjects.find((p) => p.is_active) || mockProjects[0] || null;
+      setActiveProject(active);
+      return active;
     }
-  }, [chat.activeSessionId]);
+  }, []);
+
+  const loadSessionsList = useCallback(async (projectId?: string) => {
+    try {
+      const sessData = await fetchSessions(projectId);
+      setSessions(sessData);
+    } catch {
+      const mockSess = await MockAdapter.getSessions(projectId);
+      setSessions(mockSess);
+    }
+  }, []);
+
+  const loadArtifactsList = useCallback(async (sessionId?: string, projectId?: string) => {
+    try {
+      const artData = await fetchArtifacts(sessionId, projectId);
+      setArtifacts(artData);
+      if (artData.length > 0) {
+        setSelectedArtifact(artData[0]);
+      }
+    } catch {
+      const mockArts = await MockAdapter.getArtifacts(sessionId, projectId);
+      setArtifacts(mockArts);
+      if (mockArts.length > 0) {
+        setSelectedArtifact(mockArts[0]);
+      }
+    }
+  }, []);
+
+  const loadFilesList = useCallback(async (projectId?: string) => {
+    try {
+      if (projectId) {
+        const filesData = await fetchProjectFiles(projectId);
+        setProjectFiles(filesData);
+      } else {
+        const mockFiles = await MockAdapter.getProjectFiles();
+        setProjectFiles(mockFiles);
+      }
+    } catch {
+      const mockFiles = await MockAdapter.getProjectFiles(projectId);
+      setProjectFiles(mockFiles);
+    }
+  }, []);
+
+  const loadMemoriesAndSkills = useCallback(async () => {
+    const mems = await MockAdapter.getMemories();
+    setMemories(mems);
+    const sks = await MockAdapter.getSkills();
+    setSkills(sks);
+  }, []);
 
   useEffect(() => {
-    syncWorkspaceState();
-  }, [syncWorkspaceState, chat.messages.length]);
+    loadInitialData().then((active) => {
+      loadSessionsList(active?.id);
+      loadArtifactsList(chat.activeSessionId, active?.id);
+      loadFilesList(active?.id);
+      loadMemoriesAndSkills();
+    });
+  }, [loadInitialData, loadSessionsList, loadArtifactsList, loadFilesList, loadMemoriesAndSkills, chat.activeSessionId]);
 
-  const handleQuickPrompt = (prompt: string) => {
-    chat.sendMessage(prompt);
+  // Load artifact versions when selected artifact changes
+  useEffect(() => {
+    if (selectedArtifact) {
+      fetchArtifactVersions(selectedArtifact.id)
+        .then(setArtifactVersions)
+        .catch(() => setArtifactVersions([]));
+    } else {
+      setArtifactVersions([]);
+    }
+  }, [selectedArtifact]);
+
+  // Keyboard shortcut listener for Spotlight (Alt+Space or Cmd+K)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.altKey && e.code === "Space") || (e.ctrlKey && e.key === "k") || (e.metaKey && e.key === "k")) {
+        e.preventDefault();
+        setSpotlightOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  // Filter pending HIGH_RISK confirmations to show modal
+  useEffect(() => {
+    const highRisk = chat.pendingConfirmations.find(
+      (c) => c.risk_tier === "HIGH_RISK"
+    );
+    if (highRisk) {
+      setHighRiskConfirmation(highRisk);
+    }
+  }, [chat.pendingConfirmations]);
+
+  const handleSelectProject = (proj: Project) => {
+    setActiveProject(proj);
+    loadSessionsList(proj.id);
+    loadFilesList(proj.id);
   };
 
+  const handleAddMemory = async (newMem: Omit<MemoryItem, "id" | "created_at">) => {
+    const created = await MockAdapter.addMemory(newMem);
+    setMemories((prev) => [created, ...prev]);
+  };
+
+  const handleDeleteMemory = async (id: string) => {
+    await MockAdapter.deleteMemory(id);
+    setMemories((prev) => prev.filter((m) => m.id !== id));
+  };
+
+  const handleToggleSkill = async (id: string) => {
+    const updated = await MockAdapter.toggleSkill(id);
+    setSkills([...updated]);
+  };
+
+  const handleUnloadModels = async () => {
+    try {
+      await unloadModelsApi();
+    } catch {
+      // mock unload
+    }
+    await governor.refresh();
+  };
+
+  const activeSessionTitle =
+    sessions.find((s) => s.session_id === chat.activeSessionId)?.title ||
+    (chat.activeSessionId === "session_gas_refactor_a41f"
+      ? "GAS Inventory Component Patch"
+      : chat.activeSessionId === "default"
+      ? "Default Workspace"
+      : `Session ${chat.activeSessionId.substring(0, 10)}...`);
+
+  const localPrivacyStatus = chat.isMockMode || governor.isMock ? "mock" : "local";
+
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-void text-text-main font-sans">
-      {/* 1. Left Navigation Sidebar */}
+    <div className="flex h-screen w-screen overflow-hidden p-3 gap-3 select-none text-primary font-sans relative">
+      {/* 1. Left Navigation Sidebar (260px M1 Liquid Glass) */}
       <Sidebar
         activeSessionId={chat.activeSessionId}
+        sessions={sessions}
+        projects={projects}
+        activeProject={activeProject}
         onSelectSession={chat.selectSession}
         onNewChat={chat.newChat}
+        onSelectProject={handleSelectProject}
+        onOpenSearch={() => setSpotlightOpen(true)}
+        onOpenMemory={() => setMemoryOpen(true)}
+        onOpenSkills={() => setSkillsOpen(true)}
         onOpenSettings={() => setSettingsOpen(true)}
         isCollapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+        localStatus={localPrivacyStatus}
+        activeModelName={chat.selectedModel || "Qwen3-30B"}
       />
 
-      {/* 2. Main Content Area */}
-      <main className="flex-1 flex flex-col h-full bg-main relative overflow-hidden">
-        {/* Top App Header */}
-        <header className="h-14 border-b border-subtle bg-main/90 backdrop-blur-md px-6 flex items-center justify-between select-none z-10">
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
-              <span className="font-semibold text-sm text-text-main">
-                {chat.activeSessionId === "default"
-                  ? "Default Workspace"
-                  : `Session ${chat.activeSessionId.substring(0, 12)}...`}
-              </span>
-            </div>
+      {/* 2. Center Conversation Canvas (Fluid M1/M2 Glass with 72ch Constraint) */}
+      <GlassPanel
+        variant="primary"
+        className="flex-1 flex flex-col h-full relative overflow-hidden shadow-2xl"
+      >
+        {/* Top Canvas Header */}
+        <CanvasHeader
+          sessionTitle={activeSessionTitle}
+          projectName={activeProject?.name}
+          chatMode={chatMode}
+          onToggleChatMode={setChatMode}
+          selectedModel={chat.selectedModel || "Qwen3-30B"}
+          governorTier={governor.tier}
+          vramUsedMb={governor.health?.vram_used_mb}
+          rightPanelOpen={rightPanelOpen}
+          onToggleRightPanel={() => setRightPanelOpen(!rightPanelOpen)}
+          artifactsCount={artifacts.length}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
 
-            {/* Chat Mode Switcher */}
-            <div className="hidden sm:flex items-center bg-void rounded-lg p-0.5 border border-subtle text-[11px] font-mono">
-              <button
-                onClick={() => setChatMode("WORKSPACE")}
-                className={`px-2 py-0.5 rounded-md transition-all ${
-                  chatMode === "WORKSPACE"
-                    ? "bg-surface text-cyan-accent font-semibold shadow-xs"
-                    : "text-text-muted hover:text-text-main"
-                }`}
-              >
-                WORKSPACE
-              </button>
-              <button
-                onClick={() => setChatMode("SYSTEM")}
-                className={`px-2 py-0.5 rounded-md transition-all ${
-                  chatMode === "SYSTEM"
-                    ? "bg-surface text-cyan-accent font-semibold shadow-xs"
-                    : "text-text-muted hover:text-text-main"
-                }`}
-              >
-                SYSTEM
-              </button>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <GovernorPill
-              governor={governor}
-              selectedModel={chat.selectedModel}
-              onOpenSettings={() => setSettingsOpen(true)}
-            />
-
-            {/* Right Panel Toggle Button (Amendment 4) */}
-            <button
-              onClick={() => setRightPanelOpen(!rightPanelOpen)}
-              className={`p-1.5 rounded-xl border transition-all flex items-center gap-1.5 text-xs shadow-sm ${
-                rightPanelOpen
-                  ? "bg-cyan-accent/15 border-cyan-accent/40 text-cyan-accent"
-                  : "bg-surface border-subtle hover:border-white/20 text-text-muted hover:text-text-main"
-              }`}
-              title="Toggle Artifacts & Workspace Panel"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-              {artifactsCount > 0 && (
-                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-cyan-accent/20 text-cyan-accent font-mono">
-                  {artifactsCount}
-                </span>
-              )}
-            </button>
-
-            <button
-              onClick={() => setSettingsOpen(true)}
-              className="p-1.5 rounded-xl bg-surface border border-subtle hover:border-white/20 text-text-muted hover:text-text-main transition-colors shadow-sm"
-              title="Settings"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
-            </button>
-          </div>
-        </header>
-
-        {/* Global Error Banner if chat has error */}
+        {/* Global Error Banner if any */}
         {chat.error && (
-          <div className="bg-rose-500/10 border-b border-rose-500/30 px-6 py-2 flex items-center justify-between text-xs text-rose-300 animate-in fade-in duration-150">
+          <div className="bg-danger/10 border-b border-danger/30 px-6 py-2 flex items-center justify-between text-xs text-danger animate-in fade-in duration-fast">
             <div className="flex items-center gap-2">
-              <svg className="w-4 h-4 text-rose-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
               <span>{chat.error}</span>
             </div>
             <button
               onClick={chat.clearError}
-              className="text-rose-400 hover:text-rose-200 font-bold px-2 py-0.5"
+              className="text-danger hover:text-white font-bold px-2 py-0.5"
             >
               ✕
             </button>
           </div>
         )}
 
-        {/* Conversation Body Viewport */}
-        <ChatView
+        {/* Scrollable Message List with 72ch Reading Constraint */}
+        <MessageList
           messages={chat.messages}
           streamingMessageId={chat.streamingMessageId}
           onConfirmAction={chat.confirmAction}
           onDenyAction={chat.denyAction}
-          onQuickPrompt={handleQuickPrompt}
+          onQuickPrompt={(prompt) => chat.sendMessage(prompt, undefined, undefined, activeProject?.id)}
         />
 
-        {/* Bottom Composer */}
+        {/* Floating Composer (28px M2 Capsule) */}
         <Composer
           onSendMessage={(text, attachments) =>
-            chat.sendMessage(text, undefined, attachments, activeProjectId)
+            chat.sendMessage(text, undefined, attachments, activeProject?.id)
           }
           isLoading={chat.isLoading}
-
           onAbort={chat.abortStream}
-          disabled={governor.status === "offline"}
-          activeSessionId={chat.activeSessionId}
-          activeProjectId={activeProjectId}
+          projectName={activeProject?.name}
+          activeModelName={chat.selectedModel || "Qwen3-30B"}
+          activeSkillsCount={skills.filter((s) => s.isActive).length}
+          onOpenModelSelector={() => setSettingsOpen(true)}
+          onOpenSkillsBrowser={() => setSkillsOpen(true)}
         />
-      </main>
 
-      {/* 3. Right Panel (Artifacts | Files | Context | Activity) */}
-      <RightPanel
+        {/* Floating Status Bar (Bottom Center) */}
+        <div className="absolute bottom-1 left-0 right-0 flex justify-center pointer-events-none pb-2">
+          <div className="pointer-events-auto">
+            <StatusFooter
+              localStatus={localPrivacyStatus}
+              chunksCount={activeProject?.chunks_count || 12403}
+              contextTokens={{
+                used: chat.retrievalContext?.budget_report?.total_input_tokens_used || 14000,
+                max: chat.retrievalContext?.budget_report?.total_context_window || 32768,
+              }}
+              governorTier={governor.tier}
+              vramUsageMb={governor.health?.vram_used_mb}
+              onOpenSystem={() => setRightPanelOpen(true)}
+            />
+          </div>
+        </div>
+      </GlassPanel>
+
+      {/* 3. Right Intelligence Panel (360px M1 Glass) */}
+      <IntelligencePanel
         isOpen={rightPanelOpen}
         onClose={() => setRightPanelOpen(false)}
-        activeSessionId={chat.activeSessionId}
-        activeProjectId={activeProjectId}
+        artifacts={artifacts}
+        selectedArtifact={selectedArtifact}
+        artifactVersions={artifactVersions}
+        onSelectArtifact={setSelectedArtifact}
+        onSelectVersion={(v) => {
+          const foundVer = artifactVersions.find((ver) => ver.version === v);
+          if (foundVer && selectedArtifact) {
+            setSelectedArtifact({ ...selectedArtifact, version: v, content: foundVer.content });
+          }
+        }}
+        projectFiles={projectFiles}
         retrievalContext={chat.retrievalContext}
         activitySteps={chat.activitySteps}
+        localStatus={localPrivacyStatus}
+        governorTier={governor.tier}
+        vramUsedMb={governor.health?.vram_used_mb}
+        onUnloadModels={handleUnloadModels}
+        onTogglePauseGovernor={() => {
+          if (governor.tier === "PAUSED") governor.resume();
+          else governor.pause("User requested pause from System tab");
+        }}
       />
 
+      {/* 4. Modals & Overlays */}
+      <HighRiskModal
+        isOpen={!!highRiskConfirmation}
+        confirmation={highRiskConfirmation}
+        onCancel={() => {
+          if (highRiskConfirmation) chat.denyAction(highRiskConfirmation.action_id);
+          setHighRiskConfirmation(null);
+        }}
+        onAllowOnce={(actionId) => {
+          chat.confirmAction(actionId);
+          setHighRiskConfirmation(null);
+        }}
+        onAllowForRun={(actionId) => {
+          chat.confirmAction(actionId);
+          setHighRiskConfirmation(null);
+        }}
+      />
 
+      <MemoryInspectorModal
+        isOpen={memoryOpen}
+        onClose={() => setMemoryOpen(false)}
+        memories={memories}
+        onAddMemory={handleAddMemory}
+        onDeleteMemory={handleDeleteMemory}
+      />
 
-      {/* Settings Modal */}
-      <SettingsDialog
+      <SkillsBrowserModal
+        isOpen={skillsOpen}
+        onClose={() => setSkillsOpen(false)}
+        skills={skills}
+        onToggleSkill={handleToggleSkill}
+      />
+
+      <SettingsModal
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}
-        governor={governor}
+        governor={governor.health ? {
+          status: governor.status,
+          tier: governor.tier,
+          throttled: governor.throttled,
+          activeBackend: governor.activeBackend,
+          configuredModel: governor.configuredModel,
+          availableModels: governor.availableModels,
+          ollamaConnected: governor.ollamaConnected,
+        } : undefined}
         selectedModel={chat.selectedModel}
         onSelectModel={(m) => {
           chat.setSelectedModel(m);
-          setSettingsOpen(false);
         }}
+      />
+
+      <SpotlightOverlay
+        isOpen={spotlightOpen}
+        onClose={() => setSpotlightOpen(false)}
+        onExpandToWorkspace={(prompt) => {
+          chat.sendMessage(prompt, undefined, undefined, activeProject?.id);
+        }}
+        projectName={activeProject?.name}
+        modelName={chat.selectedModel || "Qwen3-30B"}
       />
     </div>
   );

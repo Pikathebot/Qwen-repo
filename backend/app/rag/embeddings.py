@@ -91,7 +91,7 @@ class EmbeddingService:
             return []
 
         model = self._lazy_load_model()
-        if hasattr(model, "encode"):
+        if hasattr(model, "encode") and not isinstance(model, str):
             try:
                 embeddings = model.encode(texts)
                 if hasattr(embeddings, "tolist"):

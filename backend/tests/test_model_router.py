@@ -2,11 +2,47 @@ from unittest.mock import AsyncMock, patch, MagicMock
 import pytest
 import httpx
 from app.main import app
-from app.agent.model_router import ModelRouter, RoutingMode, RoutingDecision
+from app.agent.model_router import ModelRouter, RoutingMode, RoutingDecision, TaskType
 from app.agent.openrouter_client import OpenRouterClient
 from app.agent.llamacpp_provider import LlamaCppProvider
 from app.agent.ollama_provider import OllamaProvider
 from app.agent.provider_factory import get_model_provider
+
+
+def test_route_task_deterministic_fast_model():
+    """Verify deterministic routing of simple_chat, summarization, memory, and compaction to FAST_MODEL."""
+    router = ModelRouter(active_runtime="llama_cpp")
+
+    for task in (TaskType.SIMPLE_CHAT, TaskType.SUMMARIZATION, TaskType.BACKGROUND_MEMORY, TaskType.COMPACTION):
+        decision = router.route_task(task_type=task)
+        assert decision.model == "fast"
+        assert decision.provider == "llama_cpp"
+        assert "FAST_MODEL" in decision.reason
+
+
+def test_route_task_deterministic_main_model():
+    """Verify deterministic routing of deep_reasoning, coding, and complex_tool_use to MAIN_MODEL."""
+    router = ModelRouter(active_runtime="llama_cpp")
+
+    for task in (TaskType.DEEP_REASONING, TaskType.CODING, TaskType.COMPLEX_TOOL_USE):
+        decision = router.route_task(task_type=task)
+        assert decision.model == "main"
+        assert decision.provider == "llama_cpp"
+        assert "MAIN_MODEL" in decision.reason
+
+
+def test_route_task_string_task_type_and_evaluate_kwarg():
+    """Verify route_task accepts string task names and evaluate delegates correctly."""
+    router = ModelRouter(active_runtime="llama_cpp")
+
+    d1 = router.route_task("summarization")
+    assert d1.model == "fast"
+
+    d2 = router.route_task("coding")
+    assert d2.model == "main"
+
+    d3 = router.evaluate("any prompt", task_type="compaction")
+    assert d3.model == "fast"
 
 
 def test_router_llamacpp_default():
@@ -135,3 +171,18 @@ async def test_chat_llamacpp_fallback_to_ollama_on_error():
         assert data["provider"] == "ollama"
         assert data["fallback_used"] is True
         assert "Fallback: llama.cpp failed" in data["route_reason"]
+
+
+def test_route_task_vision_and_web_extraction():
+    """Verify deterministic routing for TaskType.VISION and TaskType.WEB_EXTRACTION (Phase 8)."""
+    router = ModelRouter(active_runtime="llama_cpp")
+
+    # 1. Vision Task -> VISION_MODEL
+    d_vis = router.route_task(TaskType.VISION)
+    assert "VISION_MODEL" in d_vis.reason
+    assert d_vis.model == "Qwen2.5-VL-7B-Instruct" or "vl" in d_vis.model.lower()
+
+    # 2. Web Extraction Task -> FAST_MODEL
+    d_web = router.route_task(TaskType.WEB_EXTRACTION)
+    assert "FAST_MODEL" in d_web.reason
+    assert d_web.model == "fast"

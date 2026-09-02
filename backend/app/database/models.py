@@ -107,10 +107,12 @@ class Artifact(SQLModel, table=True):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     project_id: Optional[str] = Field(default=None, foreign_key="projects.id", index=True)
     session_id: Optional[str] = Field(default=None, foreign_key="sessions.session_id", index=True)
+    conversation_id: Optional[str] = Field(default=None, index=True)
     name: str = Field(index=True)
-    type: str = Field(description="code/markdown/html/json/csv/python/svg")
+    type: str = Field(description="code/markdown/html/json/csv/python/svg/document/other")
     content: str
     version: int = Field(default=1)
+    language: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -123,6 +125,19 @@ class ArtifactVersion(SQLModel, table=True):
     version: int = Field(index=True)
     content: str
     summary: Optional[str] = None
+    created_by: str = Field(default="agent")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FileVersion(SQLModel, table=True):
+    __tablename__ = "file_versions"
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    file_path: str = Field(index=True)
+    session_id: str = Field(index=True)
+    content: str
+    version_number: int = Field(default=1, index=True)
+    created_by: str = Field(default="agent")
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

@@ -29,6 +29,7 @@ from app.governor.resource_governor import (
 from app.governor.process_watcher import ProcessWatcher
 from app.memory.store import MemoryStore
 from app.memory.compactor import ContextCompactor
+from app.memory.manager import MemoryManager
 from app.skills.loader import SkillsLoader
 from app.mcp.manager import MCPManager
 from app.voice.wake_word import WakeWordDetector
@@ -36,7 +37,7 @@ from app.voice.transcriber import AudioTranscriber
 from app.voice.synthesizer import VoiceSynthesizer
 from app.agent.tts.chatterbox_engine import ChatterboxEngine
 from app.agent.tools.audio_playback import is_playing as is_audio_playing, stop_playback as stop_audio_playback
-from app.routers import projects_router, artifacts_router
+from app.routers import projects_router, artifacts_router, memories_router
 
 
 
@@ -103,11 +104,16 @@ process_watcher = ProcessWatcher(
 from app.database.session import SessionLocal
 from app.memory.store import MemoryStore
 
+from app.agent.model_router import ModelRouter
+
 # Initialize global subsystems
 memory_store = MemoryStore(session_factory=SessionLocal)
 reliability_monitor = ReliabilityMonitor(memory_store=memory_store)
+model_router = ModelRouter()
+memory_manager = MemoryManager(memory_store=memory_store, model_router=model_router)
 
 compactor = ContextCompactor(
+    memory_store=memory_store,
     max_context_tokens=settings.memory_max_context_tokens,
     tool_pruning_char_threshold=settings.memory_tool_pruning_char_threshold
 )
@@ -123,6 +129,29 @@ from app.tools.filesystem import (
     ListDirectoryTool,
 )
 from app.tools.terminal import TerminalExecuteTool
+from app.tools.patch_tools import (
+    ApplyPatchTool,
+    ReplaceRangeTool,
+    InsertTool,
+    DeleteRangeTool,
+)
+from app.tools.git_tools import (
+    GitStatusTool,
+    GitDiffTool,
+    GitLogTool,
+    GitCheckoutTool,
+    GitCommitTool,
+)
+from app.tools.unreal_tools import (
+    UnrealDetectProjectTool,
+    UnrealReadLogsTool,
+    UnrealBuildTool,
+)
+from app.tools.web_tools import (
+    WebSearchTool,
+    WebExtractTool,
+)
+from app.tools.vision_tools import VisionAnalyzeImageTool
 
 tool_registry = ToolRegistry()
 tool_registry.register(ReadFileTool())
@@ -131,6 +160,21 @@ tool_registry.register(EditFileTool())
 tool_registry.register(CreateDirectoryTool())
 tool_registry.register(ListDirectoryTool())
 tool_registry.register(TerminalExecuteTool())
+tool_registry.register(ApplyPatchTool())
+tool_registry.register(ReplaceRangeTool())
+tool_registry.register(InsertTool())
+tool_registry.register(DeleteRangeTool())
+tool_registry.register(GitStatusTool())
+tool_registry.register(GitDiffTool())
+tool_registry.register(GitLogTool())
+tool_registry.register(GitCheckoutTool())
+tool_registry.register(GitCommitTool())
+tool_registry.register(UnrealDetectProjectTool())
+tool_registry.register(UnrealReadLogsTool())
+tool_registry.register(UnrealBuildTool())
+tool_registry.register(WebSearchTool())
+tool_registry.register(WebExtractTool())
+tool_registry.register(VisionAnalyzeImageTool())
 
 
 wake_detector = WakeWordDetector()
@@ -200,6 +244,7 @@ app.add_middleware(
 
 app.include_router(projects_router)
 app.include_router(artifacts_router)
+app.include_router(memories_router)
 
 
 

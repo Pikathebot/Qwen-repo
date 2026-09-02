@@ -36,10 +36,12 @@ class AgentLoop:
     def __init__(
         self,
         tool_registry: Optional[ToolRegistry] = None,
+        vision_manager: Optional[Any] = None,
         max_iterations: int = 5,
         max_tool_chars: int = 16000
     ):
         self.tool_registry = tool_registry or ToolRegistry()
+        self.vision_manager = vision_manager
         self.max_iterations = max_iterations
         self.max_tool_chars = max_tool_chars
         self.state = AgentState.IDLE
@@ -160,11 +162,40 @@ class AgentLoop:
         self.state = AgentState.RUNNING
         run_id = self._create_agent_run(session_id=session_id, project_id=project_id, model=model)
 
-        active_messages = list(messages)
+        active_messages = [dict(m) for m in messages]
         tool_schemas = tools if tools is not None else self.tool_registry.get_tools_schema()
         tool_calls_executed = 0
         errors_logged: list[str] = []
         approved_ids = set(approved_action_ids or [])
+
+        # Intercept image attachments and inject vision analysis (Build Plan §18 & Amendment 1)
+        for msg in active_messages:
+            if msg.get("role") == "user":
+                attachments = msg.get("attachments") or []
+                for att in attachments:
+                    file_path = att.get("path") or att.get("file_path") or ""
+                    filename = att.get("name") or (file_path.split("/")[-1].split("\\")[-1] if file_path else "image")
+                    mime = att.get("mime_type") or att.get("type") or ""
+                    if (
+                        mime.startswith("image/")
+                        or any(file_path.lower().endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"])
+                    ):
+                        image_desc = None
+                        if self.vision_manager:
+                            try:
+                                image_desc = await self.vision_manager.analyze_image(
+                                    image_data=file_path,
+                                    prompt="Describe this image in detail for a text-based AI"
+                                )
+                            except Exception as e:
+                                logger.warning("Vision analysis failed for '%s': %s", filename, e)
+                                image_desc = f"[Image attached: {filename}, but vision analysis is currently unavailable]"
+                        else:
+                            image_desc = f"[Image attached: {filename}, but vision analysis is currently unavailable]"
+
+                        if image_desc:
+                            orig_content = msg.get("content", "")
+                            msg["content"] = f"{orig_content}\n\n[Vision Analysis of {filename}]:\n{image_desc}".strip()
 
         try:
             iteration = 0
@@ -341,6 +372,38 @@ class AgentLoop:
                             "truncated": was_truncated
                         }
                     }
+
+                    # Emit file_change SSE event on filesystem / patch mutations (Step 4.3)
+                    if tool_result.status == "success" and tool_name in (
+                        "filesystem.write", "filesystem.edit", "apply_patch",
+                        "replace_range", "insert", "delete_range"
+                    ):
+                        yield {
+                            "event": "file_change",
+                            "data": {
+                                "path": tool_result.metadata.get("path") or str(parsed_args.get("path") or parsed_args.get("file_path") or ""),
+                                "action": tool_name.replace("filesystem.", ""),
+                                "diff": tool_result.metadata.get("diff") or tool_result.summary or "",
+                                "session_id": session_id,
+                            }
+                        }
+
+                    # Emit artifact_update SSE event on artifact mutations (Step 4.2)
+                    if tool_result.status == "success" and (
+                        "artifact" in tool_name or tool_result.metadata.get("artifact_id")
+                    ):
+                        yield {
+                            "event": "artifact_update",
+                            "data": {
+                                "id": tool_result.metadata.get("artifact_id", ""),
+                                "name": tool_result.metadata.get("name") or str(parsed_args.get("name", "")),
+                                "type": tool_result.metadata.get("type") or str(parsed_args.get("type", "code")),
+                                "version": tool_result.metadata.get("version", 1),
+                                "content": tool_result.result if isinstance(tool_result.result, str) else "",
+                                "action": "update" if "update" in tool_name or "patch" in tool_name else "create",
+                                "session_id": session_id,
+                            }
+                        }
 
                     # Append standardized OpenAI tool message (Amendment 2)
                     active_messages.append({

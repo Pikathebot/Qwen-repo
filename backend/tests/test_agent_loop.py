@@ -228,3 +228,56 @@ async def test_agent_loop_confirmation_required_pauses(agent_test_db):
 
     assert loop.state == AgentState.PENDING_USER_CONFIRMATION
     assert any(e["event"] == "confirmation_required" for e in events)
+
+
+@pytest.mark.anyio
+async def test_agent_loop_image_attachment_interception_and_fallback(agent_test_db):
+    engine, tmp_path = agent_test_db
+
+    class MockVisionProvider:
+        async def analyze_image(self, image_data, prompt="..."):
+            return "A cat sitting on a laptop keyboard."
+
+    class MockFailingVisionProvider:
+        async def analyze_image(self, image_data, prompt="..."):
+            raise RuntimeError("Vision endpoint offline")
+
+    from app.vision.manager import VisionManager
+
+    # 1. Successful image analysis interception
+    img_file = tmp_path / "cat.png"
+    img_file.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    vis_mgr = VisionManager(provider=MockVisionProvider())
+    loop = AgentLoop(vision_manager=vis_mgr)
+    provider = FakeModelProvider([[{"delta": "I see the cat."}]])
+
+    messages = [
+        {
+            "role": "user",
+            "content": "Look at this picture",
+            "attachments": [{"path": str(img_file), "name": "cat.png", "type": "image/png"}]
+        }
+    ]
+
+    events = []
+    async for ev in loop.run(provider=provider, messages=messages, session_id="s_vis"):
+        events.append(ev)
+
+    # Verify injected vision description
+    assert len(provider.received_messages_history) >= 1
+    injected_user_msg = provider.received_messages_history[0][0]["content"]
+    assert "Vision Analysis of cat.png" in injected_user_msg
+    assert "A cat sitting on a laptop keyboard." in injected_user_msg
+
+    # 2. Graceful fallback when vision analysis fails (Amendment 1)
+    failing_vis_mgr = VisionManager(provider=MockFailingVisionProvider())
+    failing_loop = AgentLoop(vision_manager=failing_vis_mgr)
+    failing_provider = FakeModelProvider([[{"delta": "Acknowledged."}]])
+
+    events_fallback = []
+    async for ev in failing_loop.run(provider=failing_provider, messages=messages, session_id="s_vis_fail"):
+        events_fallback.append(ev)
+
+    injected_fallback_msg = failing_provider.received_messages_history[0][0]["content"]
+    assert "vision analysis is currently unavailable" in injected_fallback_msg
