@@ -60,6 +60,13 @@ class Settings(BaseSettings):
 
     # Persona (how Jarvis speaks; tool protocol is invariant)
     persona_id: str = Field(default="jarvis", alias="PERSONA_ID")
+
+    # Ambient awareness (proactive hardware observations)
+    awareness_enabled: bool = Field(default=True, alias="AWARENESS_ENABLED")
+    awareness_poll_seconds: float = Field(default=20.0, alias="AWARENESS_POLL_SECONDS")
+    awareness_restate_cooldown_seconds: float = Field(
+        default=300.0, alias="AWARENESS_RESTATE_COOLDOWN_SECONDS"
+    )
     terminal_enabled: bool = Field(default=False, alias="TERMINAL_ENABLED")
 
     web_search_enabled: bool = Field(default=False, alias="WEB_SEARCH_ENABLED")

@@ -7,7 +7,10 @@ import {
   MemoryItem,
   PersonaOverrides,
   PersonaStatus,
+  AwarenessStatus,
+  Briefing,
   HandsFreeStatus,
+  Observation,
   VoiceListenResult,
   VoiceSayResult,
   VoiceSessionState,
@@ -701,3 +704,56 @@ export async function fetchHandsFreeStatus(): Promise<HandsFreeStatus> {
   }
   return res.json();
 }
+
+// ==========================================
+// Ambient Awareness APIs
+// ==========================================
+
+export async function fetchAwarenessStatus(): Promise<AwarenessStatus> {
+  const res = await fetch(`${API_BASE_URL}/api/awareness/status`, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch awareness status: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function fetchObservations(
+  sinceSeq = 0,
+  limit = 20
+): Promise<{ observations: Observation[]; active_conditions: string[]; latest_seq: number }> {
+  const params = new URLSearchParams({ since_seq: String(sinceSeq), limit: String(limit) });
+  const res = await fetch(`${API_BASE_URL}/api/awareness/observations?${params}`, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch observations: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function acknowledgeObservationApi(observationId: string): Promise<void> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/awareness/observations/${encodeURIComponent(observationId)}/ack`,
+    { method: "POST", headers: { Accept: "application/json" } }
+  );
+  if (!res.ok) {
+    throw new Error(`Failed to acknowledge observation: HTTP ${res.status}`);
+  }
+}
+
+export async function fetchBriefing(): Promise<Briefing> {
+  const res = await fetch(`${API_BASE_URL}/api/awareness/briefing`, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch briefing: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export const AWARENESS_STREAM_URL = `${API_BASE_URL}/api/awareness/stream`;

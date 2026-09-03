@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useChat } from "@/hooks/useChat";
 import { useGovernor } from "@/hooks/useGovernor";
 import { useVoice } from "@/hooks/useVoice";
+import { useAwareness } from "@/hooks/useAwareness";
 import { Sidebar } from "@/components/Sidebar";
 import { ChatView } from "@/components/ChatView";
 import { Composer } from "@/components/Composer";
@@ -11,7 +12,9 @@ import { GovernorPill } from "@/components/GovernorPill";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { RightPanel } from "@/components/RightPanel";
 import { VoiceOrb } from "@/components/VoiceOrb";
+import { AwarenessTray } from "@/components/AwarenessTray";
 import { fetchActiveProject, fetchArtifacts } from "@/lib/api";
+import { Observation } from "@/lib/types";
 
 export default function Home() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -72,6 +75,59 @@ export default function Home() {
     void voice.speak(lastReply.content);
   }, [chat.isLoading, chat.messages, voice]);
 
+  // Ambient observations. Spoken only while hands-free voice is on, so the
+  // machine never talks to an empty room.
+  const speakObservation = useCallback(
+    (spoken: string) => {
+      if (voice.isActive) void voice.speak(spoken);
+    },
+    [voice]
+  );
+
+  const awareness = useAwareness({ onSpeak: speakObservation });
+  const [briefingCard, setBriefingCard] = useState<Observation | null>(null);
+
+  const requestBriefing = useCallback(async () => {
+    const briefing = await awareness.getBriefing();
+    if (!briefing) return;
+
+    setBriefingCard({
+      id: `briefing_${Date.now()}`,
+      seq: -1,
+      kind: "briefing",
+      severity: "notice",
+      title: "Status briefing",
+      detail: briefing.text.replace(/\*\*/g, "").replace(/^- /gm, "· "),
+      spoken: briefing.spoken,
+      data: {},
+      timestamp: Date.now() / 1000,
+      acknowledged: false,
+      resolved: false,
+    });
+
+    if (voice.isActive) void voice.speak(briefing.spoken);
+  }, [awareness, voice]);
+
+  const trayObservations = briefingCard
+    ? [...awareness.observations, briefingCard]
+    : awareness.observations;
+
+  const dismissObservation = useCallback(
+    (observationId: string) => {
+      if (briefingCard && observationId === briefingCard.id) {
+        setBriefingCard(null);
+        return;
+      }
+      awareness.dismiss(observationId);
+    },
+    [awareness, briefingCard]
+  );
+
+  const dismissAllObservations = useCallback(() => {
+    setBriefingCard(null);
+    awareness.dismissAll();
+  }, [awareness]);
+
   const handleQuickPrompt = (prompt: string) => {
     chat.sendMessage(prompt, undefined, undefined, activeProjectId, chatMode);
   };
@@ -128,6 +184,14 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => void requestBriefing()}
+              className="px-2.5 py-1 rounded-lg bg-surface border border-subtle hover:border-white/20 text-text-muted hover:text-text-main transition-colors text-[11px] font-mono"
+              title="Spoken status briefing"
+            >
+              brief
+            </button>
+
             <VoiceOrb
               isActive={voice.isActive}
               isSupported={voice.isSupported}
@@ -204,6 +268,12 @@ export default function Home() {
           onConfirmAction={chat.confirmAction}
           onDenyAction={chat.denyAction}
           onQuickPrompt={handleQuickPrompt}
+        />
+
+        <AwarenessTray
+          observations={trayObservations}
+          onDismiss={dismissObservation}
+          onDismissAll={dismissAllObservations}
         />
 
         {/* Bottom Composer */}

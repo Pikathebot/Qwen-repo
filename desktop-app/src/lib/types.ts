@@ -396,3 +396,74 @@ export interface HandsFreeStatus {
   greeting: string;
   available_voices: Record<string, string>;
 }
+
+// ==========================================
+// Ambient Awareness
+// ==========================================
+
+export type ObservationSeverity = "info" | "notice" | "warning" | "critical";
+
+export interface Observation {
+  id: string;
+  seq: number;
+  kind: string;
+  severity: ObservationSeverity;
+  title: string;
+  detail: string;
+  spoken: string;
+  data: Record<string, unknown>;
+  timestamp: number;
+  acknowledged: boolean;
+  resolved: boolean;
+  speak?: boolean;
+}
+
+export interface AwarenessSnapshot {
+  cpu_percent: number;
+  ram_percent: number;
+  ram_used_mb: number;
+  ram_total_mb: number;
+  gpu_available: boolean;
+  gpu_name: string | null;
+  gpu_util_percent: number;
+  vram_used_mb: number;
+  vram_total_mb: number;
+  vram_free_mb: number;
+  vram_util_percent: number;
+  gpu_temp_c: number | null;
+  disk_free_gb: number;
+  disk_total_gb: number;
+  disk_percent: number;
+  battery_percent: number | null;
+  battery_plugged: boolean | null;
+  governor_status: string;
+  throttled: boolean;
+  throttle_reasons: string[];
+  model_unloaded: boolean;
+  heavy_apps: string[];
+  timestamp: number;
+}
+
+export interface AwarenessMonitorStatus {
+  enabled: boolean;
+  running: boolean;
+  poll_seconds: number;
+  restate_cooldown_seconds: number;
+  min_speak_severity: ObservationSeverity;
+  active_conditions: string[];
+  subscribers: number;
+  latest_seq: number;
+  thresholds: Record<string, number>;
+}
+
+export interface AwarenessStatus {
+  snapshot: AwarenessSnapshot;
+  monitor: AwarenessMonitorStatus;
+}
+
+export interface Briefing {
+  text: string;
+  spoken: string;
+  persona_id: string;
+  snapshot: AwarenessSnapshot;
+}

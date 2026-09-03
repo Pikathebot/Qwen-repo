@@ -43,7 +43,9 @@ from app.routers import (
     memories_router,
     persona_router,
     voice_router,
+    awareness_router,
 )
+from app.awareness.monitor import AwarenessMonitor
 
 
 
@@ -188,6 +190,14 @@ transcriber = AudioTranscriber()
 synthesizer = VoiceSynthesizer()
 chatterbox_engine = ChatterboxEngine(governor=governor)
 
+# Ambient awareness: notices hardware conditions worth speaking up about.
+awareness_monitor = AwarenessMonitor(
+    governor=governor,
+    poll_seconds=settings.awareness_poll_seconds,
+    restate_cooldown_seconds=settings.awareness_restate_cooldown_seconds,
+)
+awareness_monitor.enabled = settings.awareness_enabled
+
 
 
 @asynccontextmanager
@@ -212,6 +222,9 @@ async def lifespan(app: FastAPI):
     # Start wake word listener
     wake_detector.start_listening()
 
+    if settings.awareness_enabled:
+        await awareness_monitor.start()
+
     logger.info("==================================================================")
     logger.info("  JARVIS Backend is READY and actively listening for requests!")
     logger.info("  Health endpoint: http://127.0.0.1:8000/health")
@@ -229,6 +242,7 @@ async def lifespan(app: FastAPI):
     stop_audio_playback()
     chatterbox_engine.unload_model()
     wake_detector.stop_listening()
+    await awareness_monitor.stop()
     if settings.governor_enabled:
         await process_watcher.stop()
         await governor.stop()
@@ -264,6 +278,7 @@ app.include_router(artifacts_router)
 app.include_router(memories_router)
 app.include_router(persona_router)
 app.include_router(voice_router)
+app.include_router(awareness_router)
 
 
 
