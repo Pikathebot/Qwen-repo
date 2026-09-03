@@ -1,16 +1,33 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use tauri::{AppHandle, GlobalShortcutManager, Manager, PhysicalPosition, Window};
+use std::sync::Mutex;
+
+use tauri::{AppHandle, GlobalShortcutManager, Manager, PhysicalPosition, State, Window};
 
 /// Label of the always-on-top HUD window declared in tauri.conf.json.
 const HUD_LABEL: &str = "hud";
 
-/// Summon/dismiss the HUD from anywhere, even with Jarvis unfocused.
-const HUD_HOTKEY: &str = "CmdOrCtrl+Shift+J";
+/// Candidate global hotkeys for summoning the HUD, tried in order.
+///
+/// `RegisterHotKey` grants exclusive ownership of a combination system-wide,
+/// so if another running application already holds our first choice,
+/// registration fails outright rather than sharing it. We fall back through
+/// this list rather than leaving the HUD unreachable by keyboard.
+const HUD_HOTKEY_CANDIDATES: &[&str] = &[
+    "CmdOrCtrl+Shift+J",
+    "CmdOrCtrl+Alt+J",
+    "CmdOrCtrl+Shift+Grave",
+    "Alt+Shift+J",
+];
 
 /// Gap from the screen edges, in logical pixels.
 const HUD_MARGIN: f64 = 24.0;
+
+/// The hotkey that actually registered, if any. `None` means every candidate
+/// was already claimed by another application, in which case the HUD is
+/// still reachable from the main window's toggle button.
+struct HudHotkeyState(Mutex<Option<&'static str>>);
 
 /// Park the HUD above the taskbar in the bottom-right corner.
 ///
@@ -55,25 +72,45 @@ fn toggle_hud_window(app: AppHandle) {
     toggle_hud(&app);
 }
 
+/// The hotkey that is actually live, or `null` if none could be registered
+/// (another application already owns every candidate). The frontend uses
+/// this to tell the user the real story instead of a hardcoded guess.
 #[tauri::command]
-fn hud_hotkey() -> &'static str {
-    HUD_HOTKEY
+fn hud_hotkey(state: State<HudHotkeyState>) -> Option<&'static str> {
+    *state.0.lock().unwrap()
 }
 
 fn main() {
     tauri::Builder::default()
+        .manage(HudHotkeyState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![toggle_hud_window, hud_hotkey])
         .setup(|app| {
-            let handle = app.handle();
             let mut shortcuts = app.global_shortcut_manager();
+            let hotkey_state: State<HudHotkeyState> = app.state();
 
-            // A failed registration (the combination is already taken by
-            // another application) must not stop Jarvis from starting; the
-            // HUD is still reachable from the main window.
-            if let Err(e) = shortcuts.register(HUD_HOTKEY, move || toggle_hud(&handle)) {
-                eprintln!("Could not register HUD hotkey {HUD_HOTKEY}: {e}");
+            let mut registered = None;
+            for candidate in HUD_HOTKEY_CANDIDATES {
+                let handle = app.handle();
+                match shortcuts.register(candidate, move || toggle_hud(&handle)) {
+                    Ok(()) => {
+                        registered = Some(*candidate);
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("HUD hotkey {candidate} unavailable ({e}), trying next candidate...");
+                    }
+                }
             }
 
+            match registered {
+                Some(hotkey) => println!("HUD hotkey registered: {hotkey}"),
+                None => eprintln!(
+                    "No HUD hotkey could be registered - every candidate is already claimed by \
+                     another application. The HUD remains reachable from the main window's toggle button."
+                ),
+            }
+
+            *hotkey_state.0.lock().unwrap() = registered;
             Ok(())
         })
         .run(tauri::generate_context!())
