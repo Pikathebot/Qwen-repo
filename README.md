@@ -15,7 +15,10 @@ A private, fast, and lightweight local AI assistant for Windows 11 powered by na
 - **Model Routing (Normal vs Heavy)**: Local inference by default, dynamically routing complex reasoning to OpenRouter when enabled.
 - **Model Context Protocol (MCP)**: Bidirectional JSON-RPC 2.0 stdio client for external tools and servers.
 - **Dynamic Skills Loader**: Extensible Markdown-based domain skills (`skills/*.md`) with trigger keyword matching.
-- **Hands-Free Voice & Wake-Word**: Wake-word detection ("Jarvis" / "Hey Jarvis") with Chatterbox TTS engine.
+- **Hands-Free Voice Loop**: Wake-word detection ("Jarvis" / "Hey Jarvis") with local voice-activity detection, a 15-second follow-up window so follow-ups need no wake word, barge-in to interrupt a spoken reply, and neural TTS.
+- **Persona Layer**: Selectable manner (`jarvis`, `assistant`, `operator`) controlling address, voice, tone and spoken reply length - without ever altering the tool protocol.
+- **Ambient Awareness**: Proactive hardware observations (VRAM, thermals, RAM, disk, battery, model eviction) streamed over SSE, announced once rather than repeatedly, plus instant telemetry-assembled status briefings.
+- **Always-On-Top HUD**: A transparent Tauri overlay summoned anywhere with `Ctrl+Shift+J` - voice orb, live telemetry rings, and its own voice session.
 
 ---
 
@@ -49,9 +52,9 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ### 3. Run Automated Tests
 ```powershell
-cd backend
-..\.venv\Scripts\python.exe -m pytest -o pythonpath=". .." tests/
+.\.venv\Scripts\python.exe -m pytest
 ```
+`pytest.ini` sets the path, so this works from the repository root.
 
 ---
 

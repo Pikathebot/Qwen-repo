@@ -77,12 +77,34 @@ Jarvis is a private, lightning-fast, hardware-governed AI assistant for Windows 
 - [x] **Phase 6 — Project Workspaces & Section 7 Filesystem**: Directory hierarchy under `workspace/projects/{project_id}/` (`files/`, `knowledge/`, `artifacts/`, `memory/`, `indexes/`).
 - [x] **Phase 7 — Artifacts, Attachments & Context Injection**: Versioned artifact storage, secure attachment uploads, and automatic LLM context turn injection.
 - [x] **Phase 8 — Next.js Desktop Application**: Canonical desktop client in `desktop-app/` with workspace switcher and 4-tab RightPanel.
+- [x] **Phase 9 — Context Engine & RAG**: Syntax-aware chunking, local CPU embeddings, hybrid keyword + vector retrieval, and per-project workspace scoping for tools and permissions.
 
 ---
 
-## 3. Next Milestone: Option 4 — Context Engine & RAG
+## 3. The JARVIS Behaviour Layer
 
-- **Document Chunking & Storage**: Ingest project files and local folder knowledge into `DocumentChunk` records.
-- **Local Embeddings**: Fast local embeddings engine for semantic search over project knowledge bases.
-- **Hybrid Retrieval**: Combine exact BM25/FTS keyword search with vector similarity retrieval.
-- **Context Assembly**: Dynamically retrieve and score relevant chunks during orchestrator prompt building.
+Everything above makes Jarvis *capable*. This layer is what makes it behave like Jarvis rather than a chat window with tools.
+
+- [x] **Persona** (`backend/app/persona/`) — Three profiles (`jarvis`, `assistant`, `operator`), each with an address term, voice, tone directives and a spoken-length cap. The system prompt is composed as *persona preamble + invariant tool protocol*: a persona changes manner, never capability. Active persona and user overrides persist to `data/persona.json`.
+
+- [x] **Hands-free voice** (`backend/app/voice/session.py`, `desktop-app/src/hooks/useVoice.ts`) — The browser owns the microphone and does local voice-activity detection, so only whole utterances are uploaded; the backend owns what an utterance *means*. A wake word dispatches immediately; a bare "Jarvis" arms the session and speaks the greeting; for 15 seconds after a reply, follow-ups need no wake word. Talking over a spoken reply cuts it off.
+
+- [x] **Ambient awareness** (`backend/app/awareness/`) — Pure rules over a hardware snapshot (VRAM, thermals, RAM, CPU, disk, battery, model eviction, heavy external apps), with the monitor owning all restraint: announce once, escalate through the cooldown, stay quiet on de-escalation, restate at most every 5 minutes, and announce recovery exactly once. Observations stream over SSE and are spoken only while hands-free voice is on. Briefings are assembled from telemetry rather than generated, so they are instant and their numbers are always real.
+
+- [x] **HUD overlay** (`desktop-app/src/app/hud/`, `src-tauri/src/main.rs`) — A transparent, always-on-top window summoned from anywhere with `Ctrl+Shift+J`. Voice orb, two telemetry rings, and the last thing said in either direction. It runs its own voice session so an ambient question does not interleave with the main window's work.
+
+### Key endpoints
+
+| Area | Endpoints |
+| :--- | :--- |
+| Persona | `GET/POST /api/persona`, `PATCH/DELETE /api/persona/overrides`, `POST /api/persona/speech-preview` |
+| Voice | `POST /api/voice/listen`, `POST /api/voice/say`, `POST /api/voice/session/{id}/{start,stop,arm,state}`, `GET /api/voice/hands-free` |
+| Awareness | `GET /api/awareness/{status,observations,briefing,config,stream}`, `POST /api/awareness/poll`, `PATCH /api/awareness/config` |
+
+---
+
+## 4. Next Milestones
+
+- **Scheduled routines**: time-triggered briefings (a morning briefing without being asked) on top of the awareness monitor.
+- **Proactive tool use**: let Jarvis act on an observation, not just report it (evict the model before VRAM is exhausted rather than after).
+- **Voice-driven confirmations**: speak the pending-confirmation prompt and accept a spoken approval for `CONFIRMATION_REQUIRED` tools.

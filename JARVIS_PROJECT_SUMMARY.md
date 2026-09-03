@@ -10,4 +10,5 @@
 - **Database & Persistence**: Unified SQLModel ORM + Alembic schema migrations on startup (`data/jarvis_memory.db`).
 - **Canonical Desktop Frontend**: Next.js 14 + React + Tailwind CSS in [`desktop-app/`](desktop-app/) with workspace switching and 4-tab RightPanel (`Artifacts`, `Files`, `Context`, `Activity`).
 - **Safety & Governance**: PyNVML Hardware Resource Governor (V2) with deterministic $O(1)$ SHA-256 action confirmation tokens.
-- **Current Phase**: Phase 1 Cleanup Completed & Verified. Ready for Option 4 (Context Engine & RAG).
+- **JARVIS Behaviour Layer**: Persona profiles (manner without changing capability), a hands-free wake-word voice loop with barge-in, ambient hardware awareness that speaks up on its own, and an always-on-top HUD overlay on `Ctrl+Shift+J`.
+- **Current Phase**: Context Engine & RAG complete; JARVIS behaviour layer complete and verified (412 backend tests passing, frontend and Tauri shell building).
