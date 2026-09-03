@@ -11,6 +11,7 @@ export interface UseGovernorReturn {
   activeBackend: string;
   configuredModel: string;
   availableModels: string[];
+  llamaConnected: boolean;
   ollamaConnected: boolean;
   isLoading: boolean;
   error: string | null;
@@ -74,6 +75,9 @@ export function useGovernor(pollIntervalMs: number = 2000): UseGovernorReturn {
     status = "degraded";
   }
 
+  const isLlama = health?.llama_connected ?? false;
+  const isOllama = health?.ollama_connected ?? false;
+
   return {
     health,
     status,
@@ -81,7 +85,8 @@ export function useGovernor(pollIntervalMs: number = 2000): UseGovernorReturn {
     activeBackend: health?.active_backend ?? "llama_cpp",
     configuredModel: health?.configured_model ?? "models/Qwen3.5-9B-Q4_K_M.gguf",
     availableModels: health?.available_models ?? [],
-    ollamaConnected: health?.ollama_connected ?? false,
+    llamaConnected: isLlama,
+    ollamaConnected: isLlama || isOllama,
     isLoading,
     error,
     refresh,

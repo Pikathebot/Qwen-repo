@@ -55,6 +55,10 @@ BASE_TOOL_RISK_MAP: dict[str, RiskTier] = {
     "fetch_url": RiskTier.LOW_RISK,
     "execute_command": RiskTier.CONFIRMATION_REQUIRED,
     "delete_file": RiskTier.HIGH_RISK,
+    # Artifact Tools (Build Plan §15)
+    "create_artifact": RiskTier.LOW_RISK,
+    "update_artifact": RiskTier.LOW_RISK,
+    "read_artifact": RiskTier.LOW_RISK,
     # Phase 3: Windows OS Power Controls & Desktop Toast Alerts
     "launch_app": RiskTier.CONFIRMATION_REQUIRED,
     "focus_app": RiskTier.LOW_RISK,
@@ -185,7 +189,8 @@ WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 def evaluate_file_path_risk(
     file_path: str,
     is_write_or_delete: bool = False,
-    chat_mode: ChatMode = ChatMode.WORKSPACE
+    chat_mode: ChatMode = ChatMode.WORKSPACE,
+    workspace_root: Optional[Path | str] = None
 ) -> RiskTier:
     """
     Check if a file path targets protected OS system directories or lies outside the project workspace.
@@ -204,8 +209,12 @@ def evaluate_file_path_risk(
 
     # 2. Check workspace containment and canonicalization
     try:
-        resolved = Path(clean_path_str).resolve()
-        workspace_resolved = WORKSPACE_ROOT.resolve()
+        workspace_resolved = Path(workspace_root or WORKSPACE_ROOT).resolve()
+        p = Path(clean_path_str)
+        if p.is_absolute():
+            resolved = p.resolve()
+        else:
+            resolved = (workspace_resolved / p).resolve()
         
         # If the path is inside the project workspace directory -> safe in all modes
         if resolved == workspace_resolved or workspace_resolved in resolved.parents:
@@ -343,7 +352,8 @@ def evaluate_tool_permission(
     tool_name: str,
     arguments: dict[str, Any],
     approved_action_ids: Optional[list[str]] = None,
-    chat_mode: ChatMode = ChatMode.WORKSPACE
+    chat_mode: ChatMode = ChatMode.WORKSPACE,
+    workspace_path: Optional[str | Path] = None
 ) -> PermissionDecision:
     """
     Evaluate permission for a single tool call.
@@ -367,12 +377,12 @@ def evaluate_tool_permission(
         effective_tier = RiskTier.HIGH_RISK
     elif tool_name in ("write_file", "patch_file"):
         path = arguments.get("file_path") or arguments.get("path") or ""
-        path_tier = evaluate_file_path_risk(str(path), is_write_or_delete=True, chat_mode=chat_mode)
+        path_tier = evaluate_file_path_risk(str(path), is_write_or_delete=True, chat_mode=chat_mode, workspace_root=workspace_path)
         if path_tier != RiskTier.LOW_RISK or base_tier == RiskTier.LOW_RISK:
             effective_tier = path_tier
     elif tool_name in ("read_file", "list_directory", "find_files", "grep_in_files"):
         path = arguments.get("file_path") or arguments.get("path") or arguments.get("root_dir") or ""
-        path_tier = evaluate_file_path_risk(str(path), is_write_or_delete=False, chat_mode=chat_mode)
+        path_tier = evaluate_file_path_risk(str(path), is_write_or_delete=False, chat_mode=chat_mode, workspace_root=workspace_path)
         if path_tier != RiskTier.LOW_RISK:
             effective_tier = path_tier
     elif tool_name == "fetch_url":
@@ -422,7 +432,8 @@ def evaluate_tool_permission(
 def evaluate_tool_calls_batch(
     tool_calls: list[dict[str, Any]],
     approved_action_ids: Optional[list[str]] = None,
-    chat_mode: ChatMode = ChatMode.WORKSPACE
+    chat_mode: ChatMode = ChatMode.WORKSPACE,
+    workspace_path: Optional[str | Path] = None
 ) -> BatchPermissionResult:
     """
     Batch evaluate multiple tool calls in a single pass to prevent fragmented confirmation prompts.
@@ -433,7 +444,13 @@ def evaluate_tool_calls_batch(
     for tc in tool_calls:
         fn_name = tc.get("name", "")
         fn_args = tc.get("args", {})
-        decision = evaluate_tool_permission(fn_name, fn_args, approved_action_ids, chat_mode=chat_mode)
+        decision = evaluate_tool_permission(
+            fn_name,
+            fn_args,
+            approved_action_ids,
+            chat_mode=chat_mode,
+            workspace_path=workspace_path
+        )
 
         if decision.allowed:
             approved.append(decision)

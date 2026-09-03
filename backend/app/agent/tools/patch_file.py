@@ -1,41 +1,61 @@
 import os
 import logging
 from pathlib import Path
+from typing import Optional
+from app.config import settings
 
 logger = logging.getLogger("jarvis.agent.tools.patch_file")
 
 
-def patch_file(file_path: str, search_block: str, replacement_block: str) -> str:
+def patch_file(
+    file_path: str,
+    search_block: str,
+    replacement_block: str,
+    workspace_path: Optional[str] = None
+) -> str:
     """
-    Perform a precise in-place modification to an existing file on disk by replacing a specific search block with new content.
+    Perform a precise in-place modification to an existing file on disk inside the project workspace
+    by replacing a specific search block with new content.
     Always use this tool when editing or updating existing code, fixing functions, or changing configuration lines without rewriting entire files.
 
     Args:
         file_path: Relative path of the file to patch (e.g. 'scripts/test_calc.py', 'backend/app/main.py').
         search_block: The exact existing text snippet/block to find and replace.
         replacement_block: The new replacement text snippet/block.
+        workspace_path: Optional active project workspace root boundary.
     """
     clean_path_str = str(file_path or "").strip()
     if not clean_path_str:
         return "Error: File path cannot be empty."
 
-    path = Path(clean_path_str)
+    ws_root = Path(workspace_path or settings.workspace_path).resolve()
 
-    # Resolve candidate locations if path is slightly offset
+    p = Path(clean_path_str)
+    if p.is_absolute():
+        resolved_path = p.resolve()
+    else:
+        resolved_path = (ws_root / p).resolve()
+
+    # Anti-traversal security check: ensure path is inside active workspace boundary
+    if resolved_path != ws_root and ws_root not in resolved_path.parents:
+        return f"Error: Access denied. Target path '{file_path}' resolves outside the active project workspace boundary ('{ws_root}')."
+
+    path = resolved_path
+
+    # Fallback resolution inside workspace if not found directly
     if not path.exists():
         candidates = [
-            Path(".") / clean_path_str,
-            Path("backend") / clean_path_str,
-            Path("scripts") / Path(clean_path_str).name,
-            Path("backend/scripts") / Path(clean_path_str).name,
+            ws_root / "files" / Path(clean_path_str).name,
+            ws_root / Path(clean_path_str).name,
         ]
         for cand in candidates:
-            if cand.exists() and cand.is_file():
-                path = cand
+            cand_res = cand.resolve()
+            if (cand_res == ws_root or ws_root in cand_res.parents) and cand_res.exists() and cand_res.is_file():
+                path = cand_res
                 break
 
     if not path.exists():
-        return f"Error: Cannot patch file '{file_path}' because it does not exist."
+        return f"Error: Cannot patch file '{file_path}' because it does not exist within workspace '{ws_root}'."
 
     if path.is_dir():
         return f"Error: Cannot patch '{file_path}' because it is a directory."
@@ -93,7 +113,7 @@ def patch_file(file_path: str, search_block: str, replacement_block: str) -> str
         delta = new_lines - old_lines
         sign = f"+{delta}" if delta >= 0 else str(delta)
 
-        logger.info("Successfully patched '%s' (%s lines)", file_path, sign)
+        logger.info("Successfully patched '%s' (%s lines)", path, sign)
         return f"Successfully patched '{file_path}' (replaced {old_lines} line(s) with {new_lines} line(s), delta: {sign} lines)."
     except Exception as e:
         logger.error("Failed to patch file '%s': %s", file_path, e)

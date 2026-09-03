@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Generator, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlmodel import Session, col, select
 
@@ -28,6 +28,7 @@ class CreateProjectRequest(BaseModel):
     name: str = Field(..., min_length=1, description="Project name")
     description: Optional[str] = Field(default=None, description="Project overview or description")
     instructions: Optional[str] = Field(default=None, description="Custom system instructions for the project")
+    workspace_path: Optional[str] = Field(default=None, description="Custom on-disk workspace directory path")
     local_folders: list[str] = Field(default_factory=list, description="List of local folder paths attached to project")
 
 
@@ -35,6 +36,7 @@ class UpdateProjectRequest(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1)
     description: Optional[str] = None
     instructions: Optional[str] = None
+    workspace_path: Optional[str] = None
     local_folders: Optional[list[str]] = None
     is_active: Optional[bool] = None
 
@@ -135,6 +137,16 @@ def create_project(
     project_id = str(uuid.uuid4())
     project_dir = init_project_filesystem(project_id)
 
+    # Determine workspace directory: explicit workspace_path override, else default project_dir
+    if req.workspace_path and req.workspace_path.strip():
+        final_workspace_path = str(Path(req.workspace_path.strip()).resolve())
+        try:
+            Path(final_workspace_path).mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+    else:
+        final_workspace_path = str(project_dir)
+
     # Check if there are no existing projects; if none exist, default this to active
     existing_count = db.exec(select(Project)).all()
     make_active = len(existing_count) == 0
@@ -145,7 +157,7 @@ def create_project(
         name=req.name.strip(),
         description=req.description,
         instructions=req.instructions,
-        workspace_path=str(project_dir),
+        workspace_path=final_workspace_path,
         local_folders_json=json.dumps(req.local_folders),
         is_active=make_active,
         created_at=now,
@@ -191,6 +203,23 @@ def update_project(
         project.description = req.description
     if req.instructions is not None:
         project.instructions = req.instructions
+    if req.workspace_path is not None:
+        if req.workspace_path.strip():
+            resolved_wp = str(Path(req.workspace_path.strip()).resolve())
+            try:
+                Path(resolved_wp).mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+            project.workspace_path = resolved_wp
+        else:
+            project.workspace_path = None
+    elif req.local_folders is not None and len(req.local_folders) > 0 and req.local_folders[0].strip():
+        resolved_wp = str(Path(req.local_folders[0].strip()).resolve())
+        try:
+            Path(resolved_wp).mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        project.workspace_path = resolved_wp
     if req.local_folders is not None:
         project.local_folders_json = json.dumps(req.local_folders)
 
@@ -259,6 +288,7 @@ def delete_project(
 @router.post("/{project_id}/activate", response_model=ProjectResponse)
 def activate_project(
     project_id: str,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_session),
 ) -> ProjectResponse:
     """Set the specified project as the single active project in the workspace."""
@@ -284,5 +314,37 @@ def activate_project(
     db.commit()
     db.refresh(target_project)
 
+    # Trigger background indexing for the activated project workspace
+    def _bg_index(pid: str):
+        try:
+            from app.rag.indexer import WorkspaceIndexer
+            WorkspaceIndexer().index_project(pid)
+        except Exception as e:
+            logger.warning("Background indexing on activation failed for %s: %s", pid, e)
+
+    background_tasks.add_task(_bg_index, project_id)
+
     logger.info("Activated project '%s' (%s)", target_project.name, target_project.id)
     return format_project_response(target_project)
+
+
+@router.post("/{project_id}/index")
+def index_project_endpoint(
+    project_id: str,
+    db: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """
+    Manually trigger or re-index a project workspace, embedding all source and knowledge files.
+    Returns indexing statistics.
+    """
+    target_project = db.get(Project, project_id)
+    if not target_project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project '{project_id}' not found.",
+        )
+
+    from app.rag.indexer import WorkspaceIndexer
+    indexer = WorkspaceIndexer()
+    stats = indexer.index_project(project_id)
+    return stats

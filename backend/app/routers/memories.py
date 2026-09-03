@@ -115,22 +115,21 @@ def get_memory(
     """
     Retrieve a specific memory by ID.
     """
-    results = manager.retrieve_memories(query="", limit=1000)
-    matched = next((m for m in results if m["id"] == memory_id), None)
-    if not matched:
+    mem = manager.get_memory(memory_id)
+    if not mem:
         raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' not found")
 
     return MemoryRead(
-        id=matched["id"],
-        project_id=matched["project_id"],
-        category=matched["category"],
-        content=matched["content"],
-        source_session_id=None,
-        confidence=matched["confidence"],
-        pinned=matched["pinned"],
-        created_at=matched["created_at"],
-        updated_at=matched["updated_at"],
-        last_used_at=None,
+        id=mem.id,
+        project_id=mem.project_id,
+        category=mem.category,
+        content=mem.content,
+        source_session_id=mem.source_session_id,
+        confidence=mem.confidence,
+        pinned=mem.pinned,
+        created_at=mem.created_at,
+        updated_at=mem.updated_at,
+        last_used_at=mem.last_used_at,
     )
 
 

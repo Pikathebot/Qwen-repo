@@ -13,7 +13,9 @@ TEST_DIR = Path("test_sandbox_phase2")
 
 
 @pytest.fixture(autouse=True)
-def cleanup_sandbox():
+def cleanup_sandbox(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "workspace_path", str(Path(".").resolve()))
     if TEST_DIR.exists():
         shutil.rmtree(TEST_DIR, ignore_errors=True)
     TEST_DIR.mkdir(parents=True, exist_ok=True)

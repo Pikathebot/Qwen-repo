@@ -1,7 +1,14 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { Message, ToolStep, PendingConfirmation } from "@/lib/types";
+import {
+  Message,
+  ToolStep,
+  PendingConfirmation,
+  SSERetrievalContextEvent,
+  ActivityStep,
+  Attachment,
+} from "@/lib/types";
 import { streamChat } from "@/lib/sse-client";
 import { fetchSessionMessages, createNewSessionId } from "@/lib/api";
 
@@ -14,13 +21,14 @@ export interface UseChatReturn {
   error: string | null;
   selectedModel: string | null;
   setSelectedModel: (model: string | null) => void;
-  retrievalContext: import("@/lib/types").SSERetrievalContextEvent | null;
-  activitySteps: import("@/lib/types").ActivityStep[];
+  retrievalContext: SSERetrievalContextEvent | null;
+  activitySteps: ActivityStep[];
   sendMessage: (
     content: string,
     approvedActionIds?: string[],
-    attachments?: import("@/lib/types").Attachment[],
-    projectId?: string
+    attachments?: Attachment[],
+    projectId?: string,
+    chatMode?: "WORKSPACE" | "SYSTEM"
   ) => Promise<void>;
   confirmAction: (actionId: string) => Promise<void>;
   denyAction: () => void;
@@ -36,8 +44,8 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [pendingConfirmations, setPendingConfirmations] = useState<PendingConfirmation[]>([]);
-  const [retrievalContext, setRetrievalContext] = useState<import("@/lib/types").SSERetrievalContextEvent | null>(null);
-  const [activitySteps, setActivitySteps] = useState<import("@/lib/types").ActivityStep[]>([]);
+  const [retrievalContext, setRetrievalContext] = useState<SSERetrievalContextEvent | null>(null);
+  const [activitySteps, setActivitySteps] = useState<ActivityStep[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
 
@@ -60,6 +68,8 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
     setActiveSessionId(newId);
     setMessages([]);
     setPendingConfirmations([]);
+    setActivitySteps([]);
+    setRetrievalContext(null);
     setError(null);
     setIsLoading(false);
     setStreamingMessageId(null);
@@ -71,6 +81,8 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
     setError(null);
     setActiveSessionId(sessionId);
     setPendingConfirmations([]);
+    setActivitySteps([]);
+    setRetrievalContext(null);
 
     try {
       const history = await fetchSessionMessages(sessionId);
@@ -104,7 +116,8 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
       content: string,
       approvedActionIds?: string[],
       attachments?: import("@/lib/types").Attachment[],
-      projectId?: string
+      projectId?: string,
+      chatMode?: "WORKSPACE" | "SYSTEM"
     ) => {
       if (!content.trim() && !approvedActionIds?.length && (!attachments || attachments.length === 0)) return;
       if (isLoading) return;
@@ -146,6 +159,7 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
           message: content.trim() || lastUserPromptRef.current,
           sessionId: activeSessionId,
           projectId: projectId,
+          chatMode: chatMode || "WORKSPACE",
           model: selectedModel || undefined,
           approvedActionIds,
           attachments,
@@ -230,8 +244,14 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
               );
             },
             onConfirmationRequired: ({ pending_confirmations, session_id }) => {
-
               setPendingConfirmations(pending_confirmations);
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantMessageId
+                    ? { ...msg, pendingConfirmations: pending_confirmations }
+                    : msg
+                )
+              );
               if (session_id && session_id !== activeSessionId) {
                 setActiveSessionId(session_id);
               }
@@ -319,6 +339,12 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
   const confirmAction = useCallback(
     async (actionId: string) => {
       setPendingConfirmations((prev) => prev.filter((p) => p.action_id !== actionId));
+      setMessages((prev) =>
+        prev.map((msg) => ({
+          ...msg,
+          pendingConfirmations: msg.pendingConfirmations?.filter((p) => p.action_id !== actionId),
+        }))
+      );
       await sendMessage("", [actionId]);
     },
     [sendMessage]
@@ -327,7 +353,10 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
   const denyAction = useCallback(() => {
     setPendingConfirmations([]);
     setMessages((prev) => [
-      ...prev,
+      ...prev.map((msg) => ({
+        ...msg,
+        pendingConfirmations: undefined,
+      })),
       {
         id: `sys_${Date.now()}`,
         role: "system",

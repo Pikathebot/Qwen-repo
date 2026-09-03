@@ -309,7 +309,17 @@ class MemoryManager:
         return results
 
     # -------------------------------------------------------------
-    # 4. update_memory
+    # 4. get_memory
+    # -------------------------------------------------------------
+    def get_memory(self, memory_id: str) -> Optional[Memory]:
+        """
+        Direct O(1) lookup of a memory record by ID.
+        """
+        with self._get_session() as session:
+            return session.get(Memory, memory_id)
+
+    # -------------------------------------------------------------
+    # 5. update_memory
     # -------------------------------------------------------------
     def update_memory(
         self,

@@ -1,9 +1,11 @@
 import json
 import logging
+from pathlib import Path
 import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Optional
+from sqlmodel import select
 
 from app.config import settings, MAX_TOOL_CALLS_PER_TURN
 from app.agent.tools.registry import AVAILABLE_TOOLS, execute_tool, get_tool_schema, get_relevant_tools
@@ -363,7 +365,51 @@ class AgentOrchestrator:
             base_url=settings.openrouter_base_url
         )
 
+    def _resolve_workspace_context(
+        self,
+        project_id: Optional[str],
+        session_id: str
+    ) -> tuple[Optional[str], Path, dict[str, Any]]:
+        """
+        Resolves active project ID, workspace directory, and tool execution context.
+        """
+        resolved_project_id = project_id
+        resolved_workspace_path = Path(settings.workspace_path).resolve()
 
+        try:
+            with self.memory_store._get_session() as db:
+                from app.database.models import Project
+                proj = None
+                if resolved_project_id:
+                    proj = db.get(Project, resolved_project_id)
+                if not proj:
+                    # Check for active project
+                    stmt = select(Project).where(Project.is_active == True)
+                    proj = db.exec(stmt).first()
+                    if proj and isinstance(getattr(proj, "id", None), str):
+                        resolved_project_id = proj.id
+
+                # Guard against non-string values (e.g. mocked sessions in tests),
+                # which would otherwise create junk directories on disk.
+                proj_ws = getattr(proj, "workspace_path", None) if proj else None
+                if isinstance(proj_ws, str) and proj_ws.strip():
+                    resolved_workspace_path = Path(proj_ws).resolve()
+        except Exception as e:
+            logger.warning("Failed resolving project workspace from DB: %s", e)
+
+        if not resolved_workspace_path.exists():
+            try:
+                resolved_workspace_path.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+
+        tool_context = {
+            "workspace_path": str(resolved_workspace_path),
+            "project_id": resolved_project_id,
+            "session_id": session_id,
+        }
+
+        return resolved_project_id, resolved_workspace_path, tool_context
 
     def _build_attachment_prompt(
         self,
@@ -548,7 +594,8 @@ class AgentOrchestrator:
         attachments: Optional[list[dict[str, Any]]] = None
     ) -> OrchestratorResult:
         active_session_id = session_id or "default"
-        session_data = self.memory_store.get_or_create_session(active_session_id, chat_mode=chat_mode, project_id=project_id)
+        resolved_project_id, workspace_path, tool_context = self._resolve_workspace_context(project_id, active_session_id)
+        session_data = self.memory_store.get_or_create_session(active_session_id, chat_mode=chat_mode, project_id=resolved_project_id)
         effective_mode_str = (chat_mode or session_data.get("chat_mode") or "WORKSPACE").upper()
         resolved_chat_mode = ChatMode.SYSTEM if effective_mode_str == "SYSTEM" else ChatMode.WORKSPACE
 
@@ -597,10 +644,11 @@ class AgentOrchestrator:
 
         # 4. RAG Retrieval in WORKSPACE mode
         retrieved_chunks = []
-        if effective_mode_str == "WORKSPACE" and project_id:
+        active_rag_project_id = resolved_project_id or project_id
+        if effective_mode_str == "WORKSPACE" and active_rag_project_id:
             try:
                 retrieved_chunks = self.retriever.retrieve(
-                    project_id=project_id,
+                    project_id=active_rag_project_id,
                     query=user_message,
                     top_k=settings.context_tier3_max_chunks
                 )
@@ -612,7 +660,7 @@ class AgentOrchestrator:
             session_id=active_session_id,
             user_message=user_message,
             system_prompt=base_system_prompt,
-            project_id=project_id,
+            project_id=active_rag_project_id,
             attachments=attachments,
             retrieved_chunks=retrieved_chunks,
             chat_mode=effective_mode_str,
@@ -671,7 +719,9 @@ class AgentOrchestrator:
                     max_iterations=max_iterations,
                     route_reason=f"{decision.reason} [Fallback: OpenRouter failed ({e}), used local llama.cpp]",
                     chat_mode=resolved_chat_mode,
-                    profile=profile
+                    profile=profile,
+                    workspace_path=workspace_path,
+                    tool_context=tool_context
                 )
                 result.fallback_used = True
                 result.compaction_performed = compaction_info
@@ -692,7 +742,9 @@ class AgentOrchestrator:
                 max_iterations=max_iterations,
                 route_reason=decision.reason,
                 chat_mode=resolved_chat_mode,
-                profile=profile
+                profile=profile,
+                workspace_path=workspace_path,
+                tool_context=tool_context
             )
             result.compaction_performed = compaction_info
             result.active_skills = active_skill_names
@@ -714,7 +766,9 @@ class AgentOrchestrator:
                         max_iterations=max_iterations,
                         route_reason=f"{decision.reason} [Fallback: llama.cpp failed ({e}), used local Ollama ({fallback_model})]",
                         chat_mode=resolved_chat_mode,
-                        profile=profile
+                        profile=profile,
+                        workspace_path=workspace_path,
+                        tool_context=tool_context
                     )
                     result.fallback_used = True
                     result.compaction_performed = compaction_info
@@ -738,13 +792,17 @@ class AgentOrchestrator:
         max_iterations: int = 5,
         route_reason: str = "Local provider execution",
         chat_mode: ChatMode = ChatMode.WORKSPACE,
-        profile: str = "general"
+        profile: str = "general",
+        workspace_path: Optional[str | Path] = None,
+        tool_context: Optional[dict[str, Any]] = None
     ) -> OrchestratorResult:
         """
         Execute deterministic agent loop against ModelProvider with schema validation,
         loop breaking, rate limits, and safety gating.
         """
         turn_id = f"turn_{uuid.uuid4().hex[:12]}"
+        ws_root = Path(workspace_path or settings.workspace_path).resolve()
+        tool_ctx = tool_context or {"workspace_path": str(ws_root), "session_id": session_id}
         call_history = CallHistory(window=3)
         total_turn_tool_calls = 0
         tool_turn_counts: dict[str, int] = {}
@@ -992,7 +1050,8 @@ class AgentOrchestrator:
             batch_permission = evaluate_tool_calls_batch(
                 tool_calls=batch_calls,
                 chat_mode=chat_mode,
-                approved_action_ids=approved_action_ids
+                approved_action_ids=approved_action_ids,
+                workspace_path=str(ws_root)
             )
 
             if not batch_permission.all_allowed:
@@ -1065,7 +1124,7 @@ class AgentOrchestrator:
                     tool_output = await self.mcp_manager.call_tool(fn_name, fn_args)
                 else:
                     logger.info("Executing Native tool '%s'", fn_name)
-                    tool_output = execute_tool(fn_name, fn_args)
+                    tool_output = execute_tool(fn_name, fn_args, context=tool_ctx)
 
                 self.memory_store.record_tool_call_audit(
                     call_id=call_id,
@@ -1154,7 +1213,9 @@ class AgentOrchestrator:
             yield {"event": "done", "data": {"response": "Voice output is now disabled.", "model": "system", "provider": "system", "session_id": active_session_id}}
             return
 
-        session_data = self.memory_store.get_or_create_session(active_session_id, chat_mode=chat_mode, project_id=project_id)
+        active_session_id = session_id or "default"
+        resolved_project_id, workspace_path, tool_context = self._resolve_workspace_context(project_id, active_session_id)
+        session_data = self.memory_store.get_or_create_session(active_session_id, chat_mode=chat_mode, project_id=resolved_project_id)
         effective_mode_str = (chat_mode or session_data.get("chat_mode") or "WORKSPACE").upper()
         resolved_chat_mode = ChatMode.SYSTEM if effective_mode_str == "SYSTEM" else ChatMode.WORKSPACE
 
@@ -1175,10 +1236,11 @@ class AgentOrchestrator:
 
         # 3. RAG Retrieval in WORKSPACE mode
         retrieved_chunks = []
-        if effective_mode_str == "WORKSPACE" and project_id:
+        active_rag_project_id = resolved_project_id or project_id
+        if effective_mode_str == "WORKSPACE" and active_rag_project_id:
             try:
                 retrieved_chunks = self.retriever.retrieve(
-                    project_id=project_id,
+                    project_id=active_rag_project_id,
                     query=user_message,
                     top_k=settings.context_tier3_max_chunks
                 )
@@ -1190,7 +1252,7 @@ class AgentOrchestrator:
             session_id=active_session_id,
             user_message=user_message,
             system_prompt=base_system_prompt,
-            project_id=project_id,
+            project_id=active_rag_project_id,
             attachments=attachments,
             retrieved_chunks=retrieved_chunks,
             chat_mode=effective_mode_str,
@@ -1245,7 +1307,9 @@ class AgentOrchestrator:
             chat_mode=resolved_chat_mode,
             profile=profile,
             active_skills=active_skill_names,
-            compaction_info=None
+            compaction_info=None,
+            workspace_path=workspace_path,
+            tool_context=tool_context
         ):
             yield ev
 
@@ -1264,8 +1328,12 @@ class AgentOrchestrator:
         chat_mode: ChatMode = ChatMode.WORKSPACE,
         profile: str = "general",
         active_skills: Optional[list[str]] = None,
-        compaction_info: Optional[dict] = None
+        compaction_info: Optional[dict] = None,
+        workspace_path: Optional[str | Path] = None,
+        tool_context: Optional[dict[str, Any]] = None
     ):
+        ws_root = Path(workspace_path or settings.workspace_path).resolve()
+        tool_ctx = tool_context or {"workspace_path": str(ws_root), "session_id": session_id}
         call_history = CallHistory(window=3)
         messages: list[dict[str, Any]] = []
         messages.append({"role": "system", "content": system_prompt})
@@ -1376,7 +1444,8 @@ class AgentOrchestrator:
             batch_result = evaluate_tool_calls_batch(
                 tool_calls=[{"name": tc["name"], "args": tc["args"]} for tc in normalized_tool_calls],
                 approved_action_ids=approved_action_ids,
-                chat_mode=chat_mode
+                chat_mode=chat_mode,
+                workspace_path=str(ws_root)
             )
 
             if not batch_result.all_allowed:
@@ -1426,7 +1495,7 @@ class AgentOrchestrator:
                         if self.mcp_manager.is_mcp_tool(t_name):
                             result_str = await self.mcp_manager.call_tool(t_name, val_result.args or t_args)
                         else:
-                            result_str = execute_tool(t_name, val_result.args or t_args)
+                            result_str = execute_tool(t_name, val_result.args or t_args, context=tool_ctx)
                         is_ok = not str(result_str).startswith("Error")
                     except Exception as ex:
                         result_str = f"Error executing {t_name}: {ex}"

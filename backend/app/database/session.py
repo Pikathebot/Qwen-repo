@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from typing import Generator
+from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker
 from sqlmodel import Session, create_engine
 from app.config import settings
@@ -15,6 +16,21 @@ engine = create_engine(
     pool_pre_ping=True,
     echo=False
 )
+
+
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    """Enable WAL mode, 5-second busy timeout, and foreign key enforcement for SQLite."""
+    try:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+    except Exception:
+        pass
+
 
 SessionLocal = sessionmaker(
     autocommit=False,

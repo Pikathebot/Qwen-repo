@@ -2,7 +2,9 @@ import {
   Artifact,
   ArtifactVersion,
   Attachment,
+  GovernorTelemetry,
   HealthResponse,
+  MemoryItem,
   Project,
   ProjectFile,
   Session,
@@ -142,6 +144,7 @@ export async function createProjectApi(data: {
   name: string;
   description?: string;
   instructions?: string;
+  workspace_path?: string;
   local_folders?: string[];
 }): Promise<Project> {
   const res = await fetch(`${API_BASE_URL}/api/projects`, {
@@ -176,6 +179,7 @@ export async function updateProjectApi(
     name: string;
     description: string;
     instructions: string;
+    workspace_path: string;
     local_folders: string[];
     is_active: boolean;
   }>
@@ -411,6 +415,132 @@ export async function fetchProjectFiles(projectId: string): Promise<ProjectFile[
   if (!res.ok) {
     if (res.status === 404) return [];
     throw new Error(`Failed to fetch project files: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function restoreArtifactVersionApi(
+  artifactId: string,
+  version: number
+): Promise<Artifact> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/artifacts/${encodeURIComponent(artifactId)}/restore/${version}`,
+    {
+      method: "POST",
+      headers: { Accept: "application/json" },
+    }
+  );
+  if (!res.ok) {
+    throw new Error(`Failed to restore artifact version: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+// ==========================================
+// Long-Term Memory APIs
+// ==========================================
+
+export async function fetchMemories(
+  query?: string,
+  category?: string,
+  projectId?: string,
+  limit: number = 20
+): Promise<MemoryItem[]> {
+  const params = new URLSearchParams();
+  if (query) params.append("query", query);
+  if (category) params.append("category", category);
+  if (projectId) params.append("project_id", projectId);
+  params.append("limit", String(limit));
+
+  const res = await fetch(`${API_BASE_URL}/api/memories?${params.toString()}`, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch memories: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function createMemoryApi(data: {
+  category: string;
+  content: string;
+  project_id?: string;
+  source_session_id?: string;
+  confidence?: number;
+  pinned?: boolean;
+}): Promise<MemoryItem> {
+  const res = await fetch(`${API_BASE_URL}/api/memories`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to create memory: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function deleteMemoryApi(memoryId: string): Promise<boolean> {
+  const res = await fetch(`${API_BASE_URL}/api/memories/${encodeURIComponent(memoryId)}`, {
+    method: "DELETE",
+  });
+  return res.ok;
+}
+
+// ==========================================
+// Telemetry & Voice APIs
+// ==========================================
+
+export async function fetchGovernorStatus(): Promise<GovernorTelemetry> {
+  const res = await fetch(`${API_BASE_URL}/governor/status`, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch governor status: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function fetchVoiceStatus(): Promise<{
+  wake_word_active: boolean;
+  wake_words: string[];
+  synthesizer_voice: string;
+  voice_output_enabled: boolean;
+  tts_engine_loaded: boolean;
+  is_playing_audio: boolean;
+}> {
+  const res = await fetch(`${API_BASE_URL}/voice/status`, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch voice status: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function toggleVoiceOutputApi(enabled: boolean): Promise<{
+  enabled: boolean;
+  engine: string;
+  vram_required_mb: number;
+  is_loaded: boolean;
+  is_playing: boolean;
+}> {
+  const res = await fetch(`${API_BASE_URL}/voice/output`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to toggle voice output: HTTP ${res.status}`);
   }
   return res.json();
 }

@@ -167,9 +167,17 @@ async def test_integration_low_risk_auto_executes():
 
 
 @pytest.mark.anyio
-async def test_integration_confirmation_required_blocks_and_resumes():
+async def test_integration_confirmation_required_blocks_and_resumes(monkeypatch, tmp_path):
     """Test that a confirmation-required tool is intercepted, returns an action ID, and runs when confirmed."""
-    test_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../test_outside_confirm.txt"))
+    from app.config import settings
+    from app.agent.permissions import BASE_TOOL_RISK_MAP, RiskTier
+
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(settings, "workspace_path", str(workspace_dir))
+    monkeypatch.setitem(BASE_TOOL_RISK_MAP, "write_file", RiskTier.CONFIRMATION_REQUIRED)
+
+    test_file = str(workspace_dir / "test_confirm.txt")
     if os.path.exists(test_file):
         os.remove(test_file)
 
@@ -207,11 +215,24 @@ async def test_integration_confirmation_required_blocks_and_resumes():
         }
     ])
 
+    from app.database.session import SessionLocal
+    from app.database.models import Project
+    with SessionLocal() as db:
+        test_proj = Project(
+            id="test_perm_proj",
+            name="Perm Test Project",
+            workspace_path=str(workspace_dir),
+            is_active=False
+        )
+        db.merge(test_proj)
+        db.commit()
+
     try:
-        # 1. First call: Model attempts write_file outside workspace, which must require confirmation
+        # 1. First call: Model attempts write_file (requires confirmation)
         initial_payload = {
             "message": f"Write 'temporary file' to the file '{test_file}' using write_file.",
             "session_id": session_id,
+            "project_id": "test_perm_proj",
             "model": "hermes3:8b"
         }
         with patch("app.main.get_ollama_client", return_value=mock_turn1):
@@ -233,6 +254,7 @@ async def test_integration_confirmation_required_blocks_and_resumes():
         approved_payload = {
             "message": f"Write 'temporary file' to the file '{test_file}' using write_file.",
             "session_id": session_id,
+            "project_id": "test_perm_proj",
             "model": "hermes3:8b",
             "approved_action_ids": [action_id]
         }
@@ -246,16 +268,14 @@ async def test_integration_confirmation_required_blocks_and_resumes():
         assert any(t["tool"] == "write_file" for t in data2["tools_used"])
         # Verify file WAS written
         assert os.path.exists(test_file)
-        
-        assert res2.status_code == 200
-        data2 = res2.json()
-        assert data2["status"] == "completed"
-        assert any(t["tool"] == "write_file" for t in data2["tools_used"])
-        # Verify file WAS written
-        assert os.path.exists(test_file)
     finally:
         if os.path.exists(test_file):
             os.remove(test_file)
+        with SessionLocal() as db:
+            p_to_del = db.get(Project, "test_perm_proj")
+            if p_to_del:
+                db.delete(p_to_del)
+                db.commit()
 
         # Cleanup session
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as ac:

@@ -206,6 +206,17 @@ async def lifespan(app: FastAPI):
     # Start wake word listener
     wake_detector.start_listening()
 
+    logger.info("==================================================================")
+    logger.info("  JARVIS Backend is READY and actively listening for requests!")
+    logger.info("  Health endpoint: http://127.0.0.1:8000/health")
+    logger.info("  API Docs:        http://127.0.0.1:8000/docs")
+    logger.info("==================================================================")
+    print("\n" + "="*66, flush=True)
+    print("  JARVIS Backend is READY and actively listening for requests!", flush=True)
+    print("  Health endpoint: http://127.0.0.1:8000/health", flush=True)
+    print("  API Docs:        http://127.0.0.1:8000/docs", flush=True)
+    print("="*66 + "\n", flush=True)
+
     yield
     
     logger.info("Shutting down Jarvis Assistant backend services...")
@@ -236,7 +247,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.allowed_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

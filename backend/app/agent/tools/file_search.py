@@ -2,6 +2,8 @@ import os
 import re
 import logging
 from pathlib import Path
+from typing import Optional
+from app.config import settings
 
 logger = logging.getLogger("jarvis.agent.tools.file_search")
 
@@ -18,7 +20,12 @@ IGNORED_EXTENSIONS = {
 }
 
 
-def find_files(pattern: str, root_dir: str = ".", max_results: int = 50) -> str:
+def find_files(
+    pattern: str,
+    root_dir: str = ".",
+    max_results: int = 50,
+    workspace_path: Optional[str] = None
+) -> str:
     """
     Search for files and directories matching a glob wildcard pattern across the workspace.
     Always use this tool to locate files by name or extension (e.g. '*.py', '*config*', 'test_*.py').
@@ -27,14 +34,30 @@ def find_files(pattern: str, root_dir: str = ".", max_results: int = 50) -> str:
         pattern: Glob pattern to match against file names (e.g. '*.py', '*main*', '*.json').
         root_dir: Root directory path to start searching from (default '.').
         max_results: Maximum number of matched file paths to return (default 50).
+        workspace_path: Optional active project workspace root boundary.
     """
     clean_pattern = str(pattern or "").strip()
     if not clean_pattern:
         return "Error: Search pattern cannot be empty."
 
-    start_path = Path(root_dir or ".")
+    ws_root = Path(workspace_path or settings.workspace_path).resolve()
+    clean_root = str(root_dir or ".").strip()
+
+    if not clean_root or clean_root == ".":
+        start_path = ws_root
+    else:
+        p = Path(clean_root)
+        if p.is_absolute():
+            start_path = p.resolve()
+        else:
+            start_path = (ws_root / p).resolve()
+
+    # Anti-traversal security check: ensure start path is inside active workspace boundary
+    if start_path != ws_root and ws_root not in start_path.parents:
+        return f"Error: Access denied. Search directory '{root_dir}' resolves outside the active project workspace boundary ('{ws_root}')."
+
     if not start_path.exists():
-        return f"Error: Search directory '{root_dir}' does not exist."
+        return f"Error: Search directory '{root_dir}' does not exist within workspace '{ws_root}'."
 
     matches = []
     try:
@@ -48,7 +71,7 @@ def find_files(pattern: str, root_dir: str = ".", max_results: int = 50) -> str:
                     continue
 
                 full_file_path = Path(root) / fname
-                rel_path = os.path.relpath(full_file_path, start_path).replace("\\", "/")
+                rel_path = os.path.relpath(full_file_path, ws_root).replace("\\", "/")
 
                 if full_file_path.match(clean_pattern) or Path(fname).match(clean_pattern):
                     matches.append(rel_path)
@@ -77,7 +100,8 @@ def grep_in_files(
     pattern: str,
     path: str = ".",
     max_matches: int = 50,
-    case_sensitive: bool = False
+    case_sensitive: bool = False,
+    workspace_path: Optional[str] = None
 ) -> str:
     """
     Search for a text string or regular expression inside workspace files.
@@ -88,14 +112,30 @@ def grep_in_files(
         path: File or directory path to search within (default '.').
         max_matches: Maximum number of matching lines to return (default 50).
         case_sensitive: Whether to perform a case-sensitive search (default False).
+        workspace_path: Optional active project workspace root boundary.
     """
     clean_pattern = str(pattern or "").strip()
     if not clean_pattern:
         return "Error: Grep search pattern cannot be empty."
 
-    target_path = Path(path or ".")
+    ws_root = Path(workspace_path or settings.workspace_path).resolve()
+    clean_path = str(path or ".").strip()
+
+    if not clean_path or clean_path == ".":
+        target_path = ws_root
+    else:
+        p = Path(clean_path)
+        if p.is_absolute():
+            target_path = p.resolve()
+        else:
+            target_path = (ws_root / p).resolve()
+
+    # Anti-traversal security check: ensure target path is inside active workspace boundary
+    if target_path != ws_root and ws_root not in target_path.parents:
+        return f"Error: Access denied. Target path '{path}' resolves outside the active project workspace boundary ('{ws_root}')."
+
     if not target_path.exists():
-        return f"Error: Target path '{path}' does not exist."
+        return f"Error: Target path '{path}' does not exist within workspace '{ws_root}'."
 
     flags = 0 if case_sensitive else re.IGNORECASE
     try:
@@ -113,7 +153,7 @@ def grep_in_files(
             content = fpath.read_text(encoding="utf-8", errors="ignore")
             for line_idx, line in enumerate(content.splitlines(), start=1):
                 if regex.search(line):
-                    rel_p = os.path.relpath(fpath, ".").replace("\\", "/")
+                    rel_p = os.path.relpath(fpath, ws_root).replace("\\", "/")
                     matched_results.append({
                         "file": rel_p,
                         "line": line_idx,

@@ -41,7 +41,7 @@ class ProjectIndexer:
         keyword_store: Optional[KeywordSearchService] = None,
         workspace_root: Optional[Path] = None
     ):
-        self._session_factory = session_factory or SessionLocal
+        self._session_factory = session_factory
         self.chunker = chunker or SyntaxAwareChunker(
             chunk_size=settings.rag_chunk_size,
             chunk_overlap=settings.rag_chunk_overlap
@@ -51,11 +51,14 @@ class ProjectIndexer:
             workspace_root=workspace_root,
             embedding_service=self.embedding_service
         )
-        self.keyword_store = keyword_store or KeywordSearchService(session_factory=self._session_factory)
+        self.keyword_store = keyword_store or KeywordSearchService(session_factory=self._get_session)
         self.workspace_root = workspace_root
 
     def _get_session(self) -> Session:
-        return self._session_factory()
+        if self._session_factory:
+            return self._session_factory()
+        from app.database.session import SessionLocal
+        return SessionLocal()
 
     def compute_sha256(self, file_path: Path) -> str:
         """Compute SHA-256 hash of a local file."""
@@ -74,26 +77,32 @@ class ProjectIndexer:
         workspace_base = Path(self.workspace_root or settings.workspace_path).resolve()
 
         # Check for project specific workspace_path
+        is_custom_workspace = False
         try:
             with self._get_session() as session:
                 project = session.get(Project, project_id)
                 if project and project.workspace_path:
                     custom_wp = Path(project.workspace_path).resolve()
-                    if custom_wp.exists():
+                    if custom_wp.exists() and custom_wp.is_dir():
                         workspace_base = custom_wp
+                        is_custom_workspace = True
         except Exception as e:
             logger.debug("Error checking project %s workspace_path: %s", project_id, e)
 
-        project_dir = workspace_base / "projects" / project_id
-        if not project_dir.exists() and (workspace_base / "files").exists():
-            project_dir = workspace_base
+        search_dirs: list[Path] = []
+        if is_custom_workspace:
+            # Custom project workspace: scan root folder directly
+            search_dirs.append(workspace_base)
+        else:
+            project_dir = workspace_base / "projects" / project_id
+            if not project_dir.exists() and (workspace_base / "files").exists():
+                project_dir = workspace_base
 
-        # 1. Project standard directories
-        search_dirs = [
-            project_dir / "files",
-            project_dir / "knowledge",
-        ]
-
+            # 1. Project standard directories
+            search_dirs.extend([
+                project_dir / "files",
+                project_dir / "knowledge",
+            ])
 
         # 2. Check for configured local folders in database
         try:
@@ -105,20 +114,25 @@ class ProjectIndexer:
                         if isinstance(custom_folders, list):
                             for folder_str in custom_folders:
                                 p = Path(folder_str).resolve()
-                                if p.exists() and p.is_dir():
+                                if p.exists() and p.is_dir() and p not in search_dirs:
                                     search_dirs.append(p)
                     except Exception as json_err:
                         logger.debug("Error parsing local_folders_json for project %s: %s", project_id, json_err)
         except Exception as db_err:
             logger.debug("Error querying project %s for local folders: %s", project_id, db_err)
 
+        EXCLUDED_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".next", "dist", "build", ".pytest_cache", "indexes", "qdrant"}
+        seen_paths: set[Path] = set()
+
         for s_dir in search_dirs:
             if not s_dir.exists() or not s_dir.is_dir():
                 continue
-            for root, _, files in os.walk(s_dir):
+            for root, dirs, files in os.walk(s_dir):
+                dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS and not d.startswith(".")]
                 for f in files:
-                    f_path = Path(root) / f
-                    if f_path.suffix.lower() in SUPPORTED_EXTENSIONS:
+                    f_path = (Path(root) / f).resolve()
+                    if f_path not in seen_paths and f_path.suffix.lower() in SUPPORTED_EXTENSIONS:
+                        seen_paths.add(f_path)
                         candidate_files.append(f_path)
 
         return candidate_files
@@ -332,4 +346,20 @@ class ProjectIndexer:
                 self.keyword_store.delete_project_index(project_id)
             except Exception as e:
                 logger.warning("Error deleting keyword store index for project %s: %s", project_id, e)
+
+        try:
+            with self._get_session() as session:
+                from app.database.models import Document, DocumentChunk
+                from sqlmodel import delete as sql_delete
+                docs = session.exec(select(Document).where(Document.project_id == project_id)).all()
+                for d in docs:
+                    session.exec(sql_delete(DocumentChunk).where(DocumentChunk.document_id == d.id))
+                    session.delete(d)
+                session.commit()
+        except Exception as db_e:
+            logger.warning("Error deleting document SQL records for project %s: %s", project_id, db_e)
+
+
+# Backward-compatible alias for WorkspaceIndexer
+WorkspaceIndexer = ProjectIndexer
 

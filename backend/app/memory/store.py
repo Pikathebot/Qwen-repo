@@ -38,6 +38,7 @@ class MemoryStore:
         elif db_path is not None:
             # Isolated engine creation for standalone tests specifying a temp db path
             from pathlib import Path
+            from sqlalchemy import event
             from sqlalchemy.orm import sessionmaker
             from sqlmodel import SQLModel, create_engine
             clean_path = Path(db_path).resolve().as_posix()
@@ -46,6 +47,17 @@ class MemoryStore:
                 connect_args={"check_same_thread": False},
                 pool_pre_ping=True
             )
+
+            @event.listens_for(eng, "connect")
+            def _set_pragmas(dbapi_connection, connection_record):
+                try:
+                    c = dbapi_connection.cursor()
+                    c.execute("PRAGMA journal_mode=WAL")
+                    c.execute("PRAGMA busy_timeout=5000")
+                    c.close()
+                except Exception:
+                    pass
+
             SQLModel.metadata.create_all(eng)
             self._session_factory = sessionmaker(
                 autocommit=False,

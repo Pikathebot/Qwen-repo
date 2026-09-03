@@ -62,3 +62,11 @@ backend/workspace/
 .DS_Store
 Thumbs.db
 
+
+# Runtime artifacts
+graphify-out/
+projects/
+backend/projects/
+MagicMock/
+backend/files/
+files/

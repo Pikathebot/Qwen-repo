@@ -200,6 +200,20 @@ async def upload_file(
     db.commit()
     db.refresh(attachment)
 
+    # Automatic RAG indexing for uploaded file
+    try:
+        from app.rag.indexer import WorkspaceIndexer
+        target_pid = project_id
+        if not target_pid:
+            from app.database.models import Project
+            act = db.exec(select(Project).where(Project.is_active == True)).first()
+            if act:
+                target_pid = act.id
+        if target_pid:
+            WorkspaceIndexer().index_file(dest_path, project_id=target_pid)
+    except Exception as idx_err:
+        logger.debug("Automatic indexing after upload skipped/failed: %s", idx_err)
+
     logger.info("Uploaded attachment '%s' (%d bytes) to %s", clean_name, size_bytes, dest_path)
     return AttachmentResponse(
         id=attachment.id,

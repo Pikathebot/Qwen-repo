@@ -18,9 +18,14 @@ export default function Home() {
   const [chatMode, setChatMode] = useState<"WORKSPACE" | "SYSTEM">("WORKSPACE");
   const [activeProjectId, setActiveProjectId] = useState<string | undefined>(undefined);
   const [artifactsCount, setArtifactsCount] = useState<number>(0);
+  const [sessionsRefreshKey, setSessionsRefreshKey] = useState<number>(0);
+
+  const triggerSessionsRefresh = useCallback(() => {
+    setSessionsRefreshKey((k) => k + 1);
+  }, []);
 
   const governor = useGovernor(2000);
-  const chat = useChat();
+  const chat = useChat(triggerSessionsRefresh);
 
   const syncWorkspaceState = useCallback(async () => {
     try {
@@ -38,7 +43,7 @@ export default function Home() {
   }, [syncWorkspaceState, chat.messages.length]);
 
   const handleQuickPrompt = (prompt: string) => {
-    chat.sendMessage(prompt);
+    chat.sendMessage(prompt, undefined, undefined, activeProjectId, chatMode);
   };
 
   return (
@@ -51,6 +56,7 @@ export default function Home() {
         onOpenSettings={() => setSettingsOpen(true)}
         isCollapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+        refreshKey={sessionsRefreshKey}
       />
 
       {/* 2. Main Content Area */}
@@ -161,7 +167,7 @@ export default function Home() {
         {/* Bottom Composer */}
         <Composer
           onSendMessage={(text, attachments) =>
-            chat.sendMessage(text, undefined, attachments, activeProjectId)
+            chat.sendMessage(text, undefined, attachments, activeProjectId, chatMode)
           }
           isLoading={chat.isLoading}
 

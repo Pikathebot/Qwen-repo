@@ -15,14 +15,15 @@ TEST_SECRET_CONTENT = "JARVIS_PHASE1_CONFIRMED_40918"
 
 
 @pytest.fixture(autouse=True)
-def setup_test_files():
-    # Setup test file
-    with open(TEST_SECRET_FILE, "w", encoding="utf-8") as f:
-        f.write(TEST_SECRET_CONTENT)
+def setup_test_files(monkeypatch):
+    from app.config import settings
+    backend_dir = Path("backend").resolve()
+    monkeypatch.setattr(settings, "workspace_path", str(backend_dir))
+    test_file = backend_dir / TEST_SECRET_FILE
+    test_file.write_text(TEST_SECRET_CONTENT, encoding="utf-8")
     yield
-    # Teardown test file
-    if os.path.exists(TEST_SECRET_FILE):
-        os.remove(TEST_SECRET_FILE)
+    if test_file.exists():
+        test_file.unlink(missing_ok=True)
 
 
 # --- Unit Tests for Tool Functions ---
@@ -446,24 +447,20 @@ async def test_turn_tool_call_cap_enforced(tmp_path, monkeypatch):
 
 
 def test_disabled_tools_unregistered():
-    """Verify execute_command and delete_file are disabled from active registry and return unregistered error."""
-    from app.agent.tools.registry import TOOL_FUNCTIONS, AVAILABLE_TOOLS, execute_tool
+    """Verify execute_command and delete_file are registered with appropriate permission tiers."""
+    from app.agent.tools.registry import TOOL_FUNCTIONS
+    from app.agent.permissions import evaluate_tool_permission, RiskTier
 
-    # 1. Verify not in TOOL_FUNCTIONS
-    assert "execute_command" not in TOOL_FUNCTIONS
-    assert "delete_file" not in TOOL_FUNCTIONS
+    assert "execute_command" in TOOL_FUNCTIONS
+    assert "delete_file" in TOOL_FUNCTIONS
 
-    # 2. Verify not in AVAILABLE_TOOLS
-    tool_names = [getattr(fn, "__name__", "") for fn in AVAILABLE_TOOLS]
-    assert "execute_command" not in tool_names
-    assert "delete_file" not in tool_names
+    del_perm = evaluate_tool_permission("delete_file", {"file_path": "test.txt"})
+    assert del_perm.risk_tier == RiskTier.HIGH_RISK
+    assert del_perm.allowed is False
 
-    # 3. Direct execution returns unregistered error
-    res_cmd = execute_tool("execute_command", {"command": "ls"})
-    assert res_cmd == "Error: Tool 'execute_command' is not registered."
-
-    res_del = execute_tool("delete_file", {"file_path": "some_file.txt"})
-    assert res_del == "Error: Tool 'delete_file' is not registered."
+    cmd_perm = evaluate_tool_permission("execute_command", {"command": "rm -rf /"})
+    assert cmd_perm.risk_tier == RiskTier.HIGH_RISK
+    assert cmd_perm.allowed is False
 
 
 @pytest.mark.anyio

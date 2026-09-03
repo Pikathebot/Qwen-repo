@@ -1,50 +1,88 @@
 import os
 import subprocess
+import logging
 from pathlib import Path
+from typing import Optional
+from app.config import settings
 
-def execute_command(command: str) -> str:
+logger = logging.getLogger("jarvis.agent.tools.sample_tools")
+
+
+def execute_command(command: str, workspace_path: Optional[str] = None) -> str:
     """
-    Execute a shell command locally in the terminal. Use only when terminal commands or CLI execution is requested.
+    Execute a shell command locally in the terminal within the active project workspace directory.
+    Use only when terminal commands or CLI execution is requested.
 
     Args:
         command: The shell command string to execute (e.g. 'git status', 'python --version').
+        workspace_path: Optional active project workspace root boundary.
     """
+    cmd_clean = str(command or "").strip()
+    if not cmd_clean:
+        return "Error: Command cannot be empty."
+
+    ws_root = Path(workspace_path or settings.workspace_path).resolve()
+    if not ws_root.exists():
+        ws_root.mkdir(parents=True, exist_ok=True)
+
     try:
-        cmd_to_run = f'powershell -NoProfile -NonInteractive -Command "{command}"' if os.name == "nt" else command
+        cmd_to_run = f'powershell -NoProfile -NonInteractive -Command "{cmd_clean}"' if os.name == "nt" else cmd_clean
+        logger.info("Executing terminal command: '%s' in cwd='%s'", cmd_clean, ws_root)
         result = subprocess.run(
             cmd_to_run,
             shell=True,
             capture_output=True,
             text=True,
-            timeout=10
+            timeout=30,
+            cwd=str(ws_root)
         )
         output = result.stdout.strip()
         if result.stderr:
             output += ("\n" if output else "") + f"[Stderr]: {result.stderr.strip()}"
         return output or f"[Process exited with code {result.returncode}]"
     except subprocess.TimeoutExpired:
-        return "Error: Command execution timed out (10s limit)."
+        return "Error: Command execution timed out (30s limit)."
     except Exception as e:
-        return f"Error executing command '{command}': {str(e)}"
+        logger.error("Error executing command '%s': %s", cmd_clean, e)
+        return f"Error executing command '{cmd_clean}': {str(e)}"
 
 
-def delete_file(file_path: str) -> str:
+def delete_file(file_path: str, workspace_path: Optional[str] = None) -> str:
     """
-    Permanently delete or remove a file from disk. Use ONLY when the user explicitly requests deleting or removing a file.
+    Permanently delete or remove a file from disk within the active project workspace.
+    Use ONLY when the user explicitly requests deleting or removing a file.
 
     Args:
         file_path: Relative or absolute path of the file to delete.
+        workspace_path: Optional active project workspace root boundary.
     """
-    raw_path = file_path.strip().lstrip("./\\")
-    path = Path(raw_path)
+    clean_path_str = str(file_path or "").strip()
+    if not clean_path_str:
+        return "Error: File path cannot be empty."
+
+    ws_root = Path(workspace_path or settings.workspace_path).resolve()
+
+    p = Path(clean_path_str)
+    if p.is_absolute():
+        resolved_path = p.resolve()
+    else:
+        resolved_path = (ws_root / p).resolve()
+
+    # Anti-traversal security check: ensure path is inside active workspace boundary
+    if resolved_path != ws_root and ws_root not in resolved_path.parents:
+        return f"Error: Access denied. Target path '{file_path}' resolves outside the active project workspace boundary ('{ws_root}')."
+
+    path = resolved_path
     
     if not path.exists():
-        return f"Error: File '{file_path}' does not exist."
+        return f"Error: File '{file_path}' does not exist within workspace '{ws_root}'."
     if path.is_dir():
         return f"Error: '{file_path}' is a directory, not a file."
     
     try:
         os.remove(path)
+        logger.info("Successfully deleted file '%s'", path)
         return f"Successfully deleted file '{file_path}'."
     except Exception as e:
+        logger.error("Error deleting file '%s': %s", path, e)
         return f"Error deleting file '{file_path}': {str(e)}"

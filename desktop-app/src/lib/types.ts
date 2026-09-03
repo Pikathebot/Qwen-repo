@@ -95,25 +95,70 @@ export interface ProjectFile {
 
 
 
+export interface MemoryItem {
+  id: string;
+  project_id?: string | null;
+  category: string;
+  content: string;
+  source_session_id?: string | null;
+  confidence: number;
+  pinned: boolean;
+  score?: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
 export interface HealthResponse {
   status: "ok" | "degraded";
   active_backend: string;
   configured_model: string;
+  llama_base_url?: string;
+  llama_connected: boolean;
   available_models: string[];
   governor_throttled: boolean;
-  ollama_connected: boolean;
-  ollama_model?: string;
+  openrouter_configured?: boolean;
   active_sessions_count: number;
+  active_mcp_servers_count?: number;
+  available_skills_count?: number;
   voice_enabled?: boolean;
+  // Backward-compatibility alias
+  ollama_connected?: boolean;
+  ollama_model?: string;
 }
 
-export interface GovernorStatus {
-  status: "ok" | "degraded" | "throttled" | "paused";
+export interface GovernorTelemetry {
+  enabled: boolean;
+  status: string;
   throttled: boolean;
-  activeBackend: string;
-  configuredModel: string;
-  availableModels: string[];
-  ollamaConnected: boolean;
+  raw_throttled: boolean;
+  throttle_reasons: string[];
+  is_manual_override: boolean;
+  manual_override_active: boolean;
+  override_expires_at?: number | null;
+  pending_reload: boolean;
+  active_activities: string[];
+  model_unloaded: boolean;
+  metrics: {
+    cpu_percent: number;
+    ram_percent: number;
+    ram_used_mb: number;
+    ram_total_mb: number;
+    gpu_available: boolean;
+    gpu_name?: string | null;
+    gpu_util_percent: number;
+    vram_util_percent: number;
+    vram_used_mb: number;
+    vram_total_mb: number;
+    vram_free_mb: number;
+    gpu_temp_c?: number | null;
+    timestamp: number;
+  };
+  thresholds: {
+    gpu_threshold: number;
+    vram_threshold: number;
+    cpu_threshold: number;
+    ram_threshold: number;
+  };
 }
 
 export interface UnloadResponse {

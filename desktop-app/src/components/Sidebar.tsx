@@ -20,6 +20,7 @@ interface SidebarProps {
   onOpenSettings?: () => void;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
+  refreshKey?: number;
 }
 
 export function Sidebar({
@@ -29,6 +30,7 @@ export function Sidebar({
   onOpenSettings,
   isCollapsed,
   onToggleCollapse,
+  refreshKey,
 }: SidebarProps) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProject, setActiveProject] = useState<Project | null>(null);
@@ -39,6 +41,7 @@ export function Sidebar({
   const [newProjName, setNewProjName] = useState("");
   const [newProjDesc, setNewProjDesc] = useState("");
   const [newProjInstructions, setNewProjInstructions] = useState("");
+  const [newProjWorkspacePath, setNewProjWorkspacePath] = useState("");
   const [newProjFolders, setNewProjFolders] = useState("");
   const [creatingProject, setCreatingProject] = useState(false);
 
@@ -75,7 +78,7 @@ export function Sidebar({
     loadProjectsList().then((active) => {
       loadSessionsList(active?.id);
     });
-  }, [loadProjectsList, loadSessionsList, activeSessionId]);
+  }, [loadProjectsList, loadSessionsList, activeSessionId, refreshKey]);
 
   const handleSelectProject = async (proj: Project) => {
     try {
@@ -105,6 +108,7 @@ export function Sidebar({
         name: newProjName.trim(),
         description: newProjDesc.trim() || undefined,
         instructions: newProjInstructions.trim() || undefined,
+        workspace_path: newProjWorkspacePath.trim() || undefined,
         local_folders: folderList,
       });
 
@@ -112,6 +116,7 @@ export function Sidebar({
       setNewProjName("");
       setNewProjDesc("");
       setNewProjInstructions("");
+      setNewProjWorkspacePath("");
       setNewProjFolders("");
 
       await loadProjectsList();
@@ -265,11 +270,18 @@ export function Sidebar({
               onClick={() => setIsProjectsOpen(!isProjectsOpen)}
               className="w-full flex items-center justify-between p-2 rounded-xl bg-surface/80 hover:bg-surface border border-subtle text-xs transition-all"
             >
-              <div className="flex items-center gap-2 truncate">
+              <div className="flex items-center gap-2 truncate min-w-0">
                 <span className="w-2 h-2 rounded-full bg-emerald-accent flex-shrink-0 animate-pulse" />
-                <span className="font-medium text-text-main truncate">
-                  {activeProject ? activeProject.name : "Default Workspace"}
-                </span>
+                <div className="flex flex-col text-left truncate min-w-0">
+                  <span className="font-medium text-text-main truncate">
+                    {activeProject ? activeProject.name : "Default Workspace"}
+                  </span>
+                  {activeProject?.workspace_path && (
+                    <span className="text-[10px] text-text-muted truncate font-mono" title={activeProject.workspace_path}>
+                      {activeProject.workspace_path}
+                    </span>
+                  )}
+                </div>
               </div>
               <svg
                 className={`w-3.5 h-3.5 text-text-muted transition-transform duration-200 ${
@@ -303,9 +315,16 @@ export function Sidebar({
                             : "text-text-muted hover:bg-white/5 hover:text-text-main"
                         }`}
                       >
-                        <div className="flex items-center gap-2 truncate">
-                          {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-cyan-accent" />}
-                          <span className="truncate">{proj.name}</span>
+                        <div className="flex flex-col text-left truncate min-w-0">
+                          <div className="flex items-center gap-2 truncate">
+                            {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-cyan-accent flex-shrink-0" />}
+                            <span className="truncate">{proj.name}</span>
+                          </div>
+                          {proj.workspace_path && (
+                            <span className="text-[10px] text-text-muted/60 truncate font-mono" title={proj.workspace_path}>
+                              {proj.workspace_path}
+                            </span>
+                          )}
                         </div>
                         {projects.length > 1 && (
                           <button
@@ -487,6 +506,19 @@ export function Sidebar({
                   onChange={(e) => setNewProjInstructions(e.target.value)}
                   placeholder="Custom guidelines or context rules for this project..."
                   className="w-full bg-void border border-subtle rounded-xl px-3 py-2 text-xs text-text-main placeholder:text-text-muted/40 focus:outline-none focus:border-cyan-accent/50 resize-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-medium text-text-muted uppercase mb-1">
+                  Workspace Directory Path (Root Folder)
+                </label>
+                <input
+                  type="text"
+                  value={newProjWorkspacePath}
+                  onChange={(e) => setNewProjWorkspacePath(e.target.value)}
+                  placeholder="e.g. D:\scripting\qa-test (defaults to managed workspace/projects/...)"
+                  className="w-full bg-void border border-subtle rounded-xl px-3 py-2 text-xs text-text-main placeholder:text-text-muted/40 focus:outline-none focus:border-cyan-accent/50 font-mono"
                 />
               </div>
 

@@ -1,29 +1,37 @@
 import os
 from pathlib import Path
+from typing import Optional
+from app.config import settings
 
-def list_directory(directory_path: str = ".") -> str:
+def list_directory(directory_path: str = ".", workspace_path: Optional[str] = None) -> str:
     """
-    List files and folders in a directory. Always use this tool when the user asks to list, view, or explore directory contents.
+    List files and folders in a directory inside the project workspace.
+    Always use this tool when the user asks to list, view, or explore directory contents.
 
     Args:
         directory_path: Relative directory path within the project (e.g. '.', 'docs', 'backend'). Defaults to '.'.
+        workspace_path: Optional active project workspace root boundary.
     """
-    raw_path = directory_path.strip()
-    path = Path(raw_path)
+    raw_path = str(directory_path or ".").strip()
+    ws_root = Path(workspace_path or settings.workspace_path).resolve()
 
-    # Robust path resolution for small models
-    if not path.exists():
-        # Try stripping leading dots/slashes (e.g. .docs -> docs)
-        stripped = raw_path.lstrip("./\\")
-        if stripped and Path(stripped).exists():
-            path = Path(stripped)
-        elif not os.path.isabs(raw_path):
-            base_candidate = Path(".") / Path(raw_path).name
-            if base_candidate.exists():
-                path = base_candidate
+    if not raw_path or raw_path == ".":
+        resolved_path = ws_root
+    else:
+        p = Path(raw_path)
+        if p.is_absolute():
+            resolved_path = p.resolve()
+        else:
+            resolved_path = (ws_root / p).resolve()
+
+    # Anti-traversal security check: ensure path is inside active workspace boundary
+    if resolved_path != ws_root and ws_root not in resolved_path.parents:
+        return f"Error: Access denied. Directory '{directory_path}' resolves outside the active project workspace boundary ('{ws_root}')."
+
+    path = resolved_path
 
     if not path.exists():
-        return f"Error: Directory not found at '{directory_path}'."
+        return f"Error: Directory not found at '{directory_path}' within workspace '{ws_root}'."
     if not path.is_dir():
         return f"Error: '{directory_path}' is a file, not a directory."
     

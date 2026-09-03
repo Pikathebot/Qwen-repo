@@ -1,6 +1,8 @@
 import inspect
 import logging
-from typing import Callable, Any
+from typing import Callable, Any, Optional
+from pydantic import BaseModel, Field
+
 from app.agent.tools.read_file import read_file
 from app.agent.tools.list_directory import list_directory
 from app.agent.tools.sample_tools import execute_command, delete_file
@@ -15,6 +17,7 @@ from app.agent.tools.clipboard_control import get_clipboard, set_clipboard
 from app.agent.tools.process_control import list_processes, kill_process
 from app.agent.tools.notify import send_toast
 from app.agent.tools.audio_playback import play_audio, stop_playback
+from app.agent.tools.artifacts import create_artifact, update_artifact, read_artifact
 
 logger = logging.getLogger("jarvis.agent.tools")
 
@@ -27,6 +30,12 @@ TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {
     "patch_file": patch_file,
     "find_files": find_files,
     "grep_in_files": grep_in_files,
+    "execute_command": execute_command,
+    "delete_file": delete_file,
+    # Artifact Tools (Build Plan §15)
+    "create_artifact": create_artifact,
+    "update_artifact": update_artifact,
+    "read_artifact": read_artifact,
     # Phase 3 OS Tools
     "launch_app": launch_app,
     "focus_app": focus_app,
@@ -51,6 +60,12 @@ AVAILABLE_TOOLS: list[Callable[..., Any]] = [
     patch_file,
     find_files,
     grep_in_files,
+    execute_command,
+    delete_file,
+    # Artifact Tools
+    create_artifact,
+    update_artifact,
+    read_artifact,
     # Phase 3 OS Tools
     launch_app,
     focus_app,
@@ -67,17 +82,12 @@ AVAILABLE_TOOLS: list[Callable[..., Any]] = [
 ]
 
 
-
-from pydantic import BaseModel, Field
-from typing import Optional
-
-
 class ReadFileArgs(BaseModel):
     file_path: str = Field(..., description="Path to the file to read")
 
 
 class ListDirectoryArgs(BaseModel):
-    path: str = Field(default=".", description="Path of directory to list")
+    directory_path: str = Field(default=".", description="Path of directory to list")
 
 
 class ExecuteCommandArgs(BaseModel):
@@ -119,7 +129,25 @@ class GrepInFilesArgs(BaseModel):
     pattern: str = Field(..., description="Regex pattern or keyword")
     path: str = Field(default=".", description="Directory path")
     max_matches: int = Field(default=50, ge=1, le=200, description="Max match count")
-    case_sensitive: bool = Field(default=True, description="Case sensitivity")
+    case_sensitive: bool = Field(default=False, description="Case sensitivity")
+
+
+class CreateArtifactArgs(BaseModel):
+    name: str = Field(..., description="Title or filename for the artifact (e.g. 'main.py', 'system_architecture.md')")
+    type: str = Field(default="code", description="Artifact type ('code', 'markdown', 'html', 'json', 'csv', 'python', 'svg', 'document', 'other')")
+    content: str = Field(..., description="Full text or code content of the artifact")
+    language: Optional[str] = Field(default=None, description="Programming or markup language (e.g. 'python', 'typescript', 'markdown')")
+    summary: Optional[str] = Field(default=None, description="Short summary of the artifact content")
+
+
+class UpdateArtifactArgs(BaseModel):
+    artifact_id: str = Field(..., description="Unique UUID of the artifact to update")
+    content: str = Field(..., description="New content for the artifact")
+    summary: Optional[str] = Field(default=None, description="Changelog summary for this new version")
+
+
+class ReadArtifactArgs(BaseModel):
+    artifact_id: str = Field(..., description="Unique UUID of the artifact to read")
 
 
 class LaunchAppArgs(BaseModel):
@@ -183,6 +211,10 @@ TOOL_SCHEMAS: dict[str, type[BaseModel]] = {
     "patch_file": PatchFileArgs,
     "find_files": FindFilesArgs,
     "grep_in_files": GrepInFilesArgs,
+    # Artifact Tools
+    "create_artifact": CreateArtifactArgs,
+    "update_artifact": UpdateArtifactArgs,
+    "read_artifact": ReadArtifactArgs,
     # Phase 3 OS Tools
     "launch_app": LaunchAppArgs,
     "focus_app": FocusAppArgs,
@@ -204,13 +236,15 @@ def get_tool_schema(tool_name: str) -> Optional[type[BaseModel]]:
     return TOOL_SCHEMAS.get(tool_name)
 
 
-
-
-
-def execute_tool(tool_name: str, arguments: dict[str, Any]) -> str:
+def execute_tool(
+    tool_name: str,
+    arguments: dict[str, Any],
+    context: Optional[dict[str, Any]] = None
+) -> str:
     """
     Execute a registered tool by name with provided arguments, automatically
-    filtering any extra hallucinated keyword arguments from smaller LLMs.
+    filtering any extra hallucinated keyword arguments from smaller LLMs and
+    injecting runtime execution context (workspace_path, project_id, session_id).
     """
     if tool_name not in TOOL_FUNCTIONS:
         logger.warning("Attempted to execute unregistered tool: '%s'", tool_name)
@@ -222,6 +256,17 @@ def execute_tool(tool_name: str, arguments: dict[str, Any]) -> str:
         sig = inspect.signature(func)
         valid_params = set(sig.parameters.keys())
         filtered_args = {k: v for k, v in arguments.items() if k in valid_params}
+
+        # Context injection for workspace-aware and session-aware tools
+        if context:
+            if "workspace_path" in valid_params and "workspace_path" not in filtered_args and "workspace_path" in context:
+                filtered_args["workspace_path"] = context["workspace_path"]
+            if "project_id" in valid_params and "project_id" not in filtered_args and "project_id" in context:
+                filtered_args["project_id"] = context["project_id"]
+            if "session_id" in valid_params and "session_id" not in filtered_args and "session_id" in context:
+                filtered_args["session_id"] = context["session_id"]
+            if "context" in valid_params and "context" not in filtered_args:
+                filtered_args["context"] = context
 
         logger.info("Executing tool '%s' with filtered args: %s", tool_name, filtered_args)
         result = func(**filtered_args)
@@ -254,7 +299,7 @@ def get_relevant_tools(
         "who are you", "what are you", "how are you", "help", "thanks", "thank you"
     }
     if q in chitchat_triggers or len(q) < 4:
-        if not any(w in q for w in ("file", "find", "search", "open", "run", "read", "write")):
+        if not any(w in q for w in ("file", "find", "search", "open", "run", "read", "write", "artifact")):
             return []
 
     tools = set()
@@ -278,7 +323,17 @@ def get_relevant_tools(
         tools.add(grep_in_files)
         tools.add(list_directory)
 
-    # 3. System / App / OS triggers
+    # 3. Artifact triggers
+    artifact_triggers = (
+        "artifact", "deliverable", "document", "report", "save code", "create artifact",
+        "generate artifact", "update artifact", "read artifact", "markdown document"
+    )
+    if any(w in q for w in artifact_triggers):
+        tools.add(create_artifact)
+        tools.add(update_artifact)
+        tools.add(read_artifact)
+
+    # 4. System / App / OS triggers
     os_triggers = (
         "open", "launch", "app", "window", "volume", "sound", "mute", "unmute",
         "music", "play", "pause", "clipboard", "copy", "paste", "process",
@@ -306,4 +361,3 @@ def get_relevant_tools(
         return AVAILABLE_TOOLS
 
     return []
-

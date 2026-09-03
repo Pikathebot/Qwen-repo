@@ -45,6 +45,17 @@ class Settings(BaseSettings):
     app_port: int = Field(default=8000, alias="APP_PORT")
     database_url: str = Field(default="sqlite:///./data/jarvis_memory.db", alias="DATABASE_URL")
     workspace_path: str = Field(default="./workspace", alias="WORKSPACE_PATH")
+    allowed_cors_origins: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+            "tauri://localhost",
+            "vscode-webview://*"
+        ],
+        alias="ALLOWED_CORS_ORIGINS"
+    )
     max_upload_size_mb: int = Field(default=50, alias="MAX_UPLOAD_SIZE_MB")
     terminal_enabled: bool = Field(default=False, alias="TERMINAL_ENABLED")
 
