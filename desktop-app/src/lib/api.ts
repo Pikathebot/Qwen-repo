@@ -7,6 +7,11 @@ import {
   MemoryItem,
   PersonaOverrides,
   PersonaStatus,
+  HandsFreeStatus,
+  VoiceListenResult,
+  VoiceSayResult,
+  VoiceSessionState,
+  VoiceState,
   Project,
   ProjectFile,
   Session,
@@ -601,6 +606,98 @@ export async function clearPersonaOverridesApi(): Promise<PersonaStatus> {
   });
   if (!res.ok) {
     throw new Error(`Failed to reset persona: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+// ==========================================
+// Hands-free Voice APIs
+// ==========================================
+
+export async function listenChunkApi(
+  audio: Blob,
+  sessionId: string
+): Promise<VoiceListenResult> {
+  const form = new FormData();
+  const extension = audio.type.includes("ogg") ? "ogg" : audio.type.includes("wav") ? "wav" : "webm";
+  form.append("file", audio, `utterance.${extension}`);
+  form.append("session_id", sessionId);
+
+  const res = await fetch(`${API_BASE_URL}/api/voice/listen`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    throw new Error(`Voice listen failed: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function sayApi(
+  text: string,
+  sessionId: string,
+  voiceId?: string
+): Promise<VoiceSayResult> {
+  const res = await fetch(`${API_BASE_URL}/api/voice/say`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ text, session_id: sessionId, voice_id: voiceId }),
+  });
+  if (!res.ok) {
+    throw new Error(`Voice synthesis failed: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+async function voiceSessionAction(
+  sessionId: string,
+  action: "start" | "stop" | "arm"
+): Promise<VoiceSessionState> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/voice/session/${encodeURIComponent(sessionId)}/${action}`,
+    { method: "POST", headers: { Accept: "application/json" } }
+  );
+  if (!res.ok) {
+    throw new Error(`Voice ${action} failed: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export const startHandsFreeApi = (sessionId: string) => voiceSessionAction(sessionId, "start");
+export const stopHandsFreeApi = (sessionId: string) => voiceSessionAction(sessionId, "stop");
+export const armFollowUpApi = (sessionId: string) => voiceSessionAction(sessionId, "arm");
+
+export async function setVoiceStateApi(
+  sessionId: string,
+  state: VoiceState
+): Promise<VoiceSessionState> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/voice/session/${encodeURIComponent(sessionId)}/state`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ state }),
+    }
+  );
+  if (!res.ok) {
+    throw new Error(`Voice state update failed: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function fetchHandsFreeStatus(): Promise<HandsFreeStatus> {
+  const res = await fetch(`${API_BASE_URL}/api/voice/hands-free`, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch hands-free status: HTTP ${res.status}`);
   }
   return res.json();
 }

@@ -1,0 +1,189 @@
+import base64
+import logging
+from typing import Any, Optional
+
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from pydantic import BaseModel, Field
+
+from app.persona import persona_manager
+from app.voice.session import VoiceSessionManager, VoiceState
+from app.voice.synthesizer import AVAILABLE_NEURAL_VOICES, VoiceSynthesizer
+from app.voice.transcriber import AudioTranscriber
+
+logger = logging.getLogger("jarvis.routers.voice")
+
+router = APIRouter(prefix="/api/voice", tags=["voice"])
+
+# One hands-free state machine for the process; the desktop client drives it.
+voice_sessions = VoiceSessionManager()
+
+
+def get_transcriber() -> AudioTranscriber:
+    try:
+        from app.main import transcriber
+
+        return transcriber
+    except Exception:
+        return AudioTranscriber()
+
+
+def get_synthesizer() -> VoiceSynthesizer:
+    try:
+        from app.main import synthesizer
+
+        return synthesizer
+    except Exception:
+        return VoiceSynthesizer()
+
+
+class SayRequest(BaseModel):
+    text: str = Field(..., description="Screen reply to convert into spoken audio")
+    session_id: str = Field(default="default")
+    voice_id: Optional[str] = Field(
+        default=None, description="Override the persona's voice for this utterance"
+    )
+    shape: bool = Field(
+        default=True,
+        description="Apply the persona's speech shaping (strip markdown, cap length)",
+    )
+
+
+class VoiceStateRequest(BaseModel):
+    state: str = Field(..., description="idle | listening | armed | thinking | speaking")
+
+
+# ------------------------------------------------------------------ listening
+
+
+@router.post("/listen", response_model=dict)
+async def listen(
+    file: UploadFile = File(..., description="Captured audio chunk (webm/wav/mp3)"),
+    session_id: str = Form(default="default"),
+) -> dict[str, Any]:
+    """
+    Transcribe one captured chunk and decide whether it was addressed to Jarvis.
+
+    The client streams short chunks here continuously while hands-free mode is
+    on; only chunks that carry a wake word (or land inside the follow-up
+    window) come back with should_respond set.
+    """
+    data = await file.read()
+    if not data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Empty audio upload."
+        )
+
+    fmt = (file.filename or "audio.webm").rsplit(".", 1)[-1].lower()
+    result = get_transcriber().transcribe_audio_bytes(data, format=fmt)
+    transcript = (result.get("text") or "").strip()
+
+    # transcribe_audio_bytes strips wake-word prefixes for convenience; the
+    # decision needs the untouched text to tell "Jarvis, do X" from "do X".
+    raw_transcript = (result.get("raw_text") or transcript).strip()
+
+    persona = persona_manager.get_active()
+    decision = voice_sessions.evaluate_utterance(
+        session_id=session_id,
+        transcript=raw_transcript,
+        greeting=persona.greeting,
+    )
+
+    payload = decision.to_dict()
+    payload["transcription_error"] = result.get("error")
+    payload["duration_seconds"] = result.get("duration_seconds", 0.0)
+    payload["session"] = voice_sessions.get(session_id).to_dict()
+    return payload
+
+
+@router.post("/say", response_model=dict)
+async def say(req: SayRequest) -> dict[str, Any]:
+    """
+    Render a reply as the persona would actually say it, plus MP3 audio.
+
+    Audio is returned base64-encoded alongside the spoken text so the client
+    can show what is being said while it plays.
+    """
+    persona = persona_manager.get_active()
+    spoken_text = persona.shape_for_speech(req.text) if req.shape else req.text
+
+    if not spoken_text:
+        return {
+            "spoken_text": "",
+            "audio_base64": "",
+            "voice_id": req.voice_id or persona.voice_id,
+            "session": voice_sessions.get(req.session_id).to_dict(),
+        }
+
+    voice_id = req.voice_id or persona.voice_id
+    audio = await get_synthesizer().generate_neural_audio_bytes(spoken_text, voice=voice_id)
+
+    voice_sessions.set_state(req.session_id, VoiceState.SPEAKING)
+
+    return {
+        "spoken_text": spoken_text,
+        "audio_base64": base64.b64encode(audio).decode("ascii") if audio else "",
+        "audio_mime": "audio/mpeg",
+        "voice_id": voice_id,
+        "persona_id": persona_manager.active_id,
+        "synthesis_failed": not audio,
+        "session": voice_sessions.get(req.session_id).to_dict(),
+    }
+
+
+# -------------------------------------------------------------- session state
+
+
+@router.get("/session/{session_id}", response_model=dict)
+async def get_voice_session(session_id: str) -> dict[str, Any]:
+    """Current hands-free state for one chat session."""
+    return voice_sessions.get(session_id).to_dict()
+
+
+@router.post("/session/{session_id}/start", response_model=dict)
+async def start_hands_free(session_id: str) -> dict[str, Any]:
+    """Begin listening for the wake word."""
+    return voice_sessions.start_listening(session_id).to_dict()
+
+
+@router.post("/session/{session_id}/stop", response_model=dict)
+async def stop_hands_free(session_id: str) -> dict[str, Any]:
+    """Stop listening and drop any follow-up arming."""
+    return voice_sessions.stop_listening(session_id).to_dict()
+
+
+@router.post("/session/{session_id}/state", response_model=dict)
+async def set_voice_state(session_id: str, req: VoiceStateRequest) -> dict[str, Any]:
+    """
+    Report client-side state transitions (notably barge-in: the client moves
+    back to 'listening' the moment the user talks over a spoken reply).
+    """
+    try:
+        state = VoiceState(req.state.lower())
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown voice state '{req.state}'. Expected one of: "
+            + ", ".join(s.value for s in VoiceState),
+        )
+    return voice_sessions.set_state(session_id, state).to_dict()
+
+
+@router.post("/session/{session_id}/arm", response_model=dict)
+async def arm_follow_up(session_id: str) -> dict[str, Any]:
+    """
+    Arm the follow-up window after a reply, so the next question needs no
+    wake word.
+    """
+    return voice_sessions.arm_follow_up(session_id).to_dict()
+
+
+@router.get("/hands-free", response_model=dict)
+async def hands_free_status() -> dict[str, Any]:
+    """Wake words, follow-up window, active voice sessions, and the persona voice."""
+    persona = persona_manager.get_active()
+    payload = voice_sessions.status()
+    payload["persona_id"] = persona_manager.active_id
+    payload["voice_id"] = persona.voice_id
+    payload["greeting"] = persona.greeting
+    payload["available_voices"] = AVAILABLE_NEURAL_VOICES
+    return payload

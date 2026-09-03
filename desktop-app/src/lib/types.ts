@@ -346,3 +346,53 @@ export interface PersonaStatus {
   available: PersonaSummary[];
   available_voices: Record<string, string>;
 }
+
+// ==========================================
+// Hands-free Voice
+// ==========================================
+
+export type VoiceState = "idle" | "listening" | "armed" | "thinking" | "speaking";
+
+export interface VoiceSessionState {
+  session_id: string;
+  state: VoiceState;
+  armed: boolean;
+  armed_seconds_remaining: number;
+  last_wake_word: string | null;
+  last_transcript: string;
+  turns: number;
+}
+
+export interface VoiceListenResult {
+  should_respond: boolean;
+  query: string;
+  transcript: string;
+  wake_detected: boolean;
+  wake_word: string | null;
+  reason: string;
+  speak_immediately: string;
+  state: VoiceState;
+  transcription_error?: string | null;
+  duration_seconds?: number;
+  session: VoiceSessionState;
+}
+
+export interface VoiceSayResult {
+  spoken_text: string;
+  audio_base64: string;
+  audio_mime?: string;
+  voice_id: string;
+  persona_id?: string;
+  synthesis_failed?: boolean;
+  session: VoiceSessionState;
+}
+
+export interface HandsFreeStatus {
+  wake_words: string[];
+  follow_up_window_seconds: number;
+  sessions: VoiceSessionState[];
+  persona_id: string;
+  voice_id: string;
+  greeting: string;
+  available_voices: Record<string, string>;
+}

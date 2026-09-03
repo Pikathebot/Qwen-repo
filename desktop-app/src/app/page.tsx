@@ -1,14 +1,16 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useChat } from "@/hooks/useChat";
 import { useGovernor } from "@/hooks/useGovernor";
+import { useVoice } from "@/hooks/useVoice";
 import { Sidebar } from "@/components/Sidebar";
 import { ChatView } from "@/components/ChatView";
 import { Composer } from "@/components/Composer";
 import { GovernorPill } from "@/components/GovernorPill";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { RightPanel } from "@/components/RightPanel";
+import { VoiceOrb } from "@/components/VoiceOrb";
 import { fetchActiveProject, fetchArtifacts } from "@/lib/api";
 
 export default function Home() {
@@ -41,6 +43,34 @@ export default function Home() {
   useEffect(() => {
     syncWorkspaceState();
   }, [syncWorkspaceState, chat.messages.length]);
+
+  // A voice turn is answered out loud once the agent finishes streaming.
+  const awaitingVoiceReplyRef = useRef(false);
+
+  const handleVoiceCommand = useCallback(
+    (query: string) => {
+      awaitingVoiceReplyRef.current = true;
+      void chat.sendMessage(query, undefined, undefined, activeProjectId, chatMode);
+    },
+    [chat, activeProjectId, chatMode]
+  );
+
+  const voice = useVoice({
+    sessionId: chat.activeSessionId,
+    onCommand: handleVoiceCommand,
+  });
+
+  useEffect(() => {
+    if (chat.isLoading || !awaitingVoiceReplyRef.current) return;
+
+    const lastReply = [...chat.messages]
+      .reverse()
+      .find((m) => m.role === "assistant" && m.content.trim());
+    if (!lastReply) return;
+
+    awaitingVoiceReplyRef.current = false;
+    void voice.speak(lastReply.content);
+  }, [chat.isLoading, chat.messages, voice]);
 
   const handleQuickPrompt = (prompt: string) => {
     chat.sendMessage(prompt, undefined, undefined, activeProjectId, chatMode);
@@ -98,6 +128,18 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-3">
+            <VoiceOrb
+              isActive={voice.isActive}
+              isSupported={voice.isSupported}
+              state={voice.state}
+              level={voice.level}
+              transcript={voice.transcript}
+              spokenText={voice.spokenText}
+              error={voice.error}
+              onToggle={() => void voice.toggle()}
+              onStopSpeaking={voice.stopSpeaking}
+            />
+
             <GovernorPill
               governor={governor}
               selectedModel={chat.selectedModel}
