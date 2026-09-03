@@ -15,6 +15,7 @@ import { VoiceOrb } from "@/components/VoiceOrb";
 import { AwarenessTray } from "@/components/AwarenessTray";
 import { fetchActiveProject, fetchArtifacts } from "@/lib/api";
 import { Observation } from "@/lib/types";
+import { getHudHotkey, isTauri, toggleHudWindow } from "@/lib/tauri";
 
 export default function Home() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -128,6 +129,13 @@ export default function Home() {
     awareness.dismissAll();
   }, [awareness]);
 
+  // HUD overlay: only meaningful inside the Tauri shell.
+  const [hudHotkey, setHudHotkey] = useState<string | null>(null);
+
+  useEffect(() => {
+    void getHudHotkey().then(setHudHotkey);
+  }, []);
+
   const handleQuickPrompt = (prompt: string) => {
     chat.sendMessage(prompt, undefined, undefined, activeProjectId, chatMode);
   };
@@ -184,6 +192,16 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-3">
+            {isTauri() && (
+              <button
+                onClick={() => void toggleHudWindow()}
+                className="px-2.5 py-1 rounded-lg bg-surface border border-subtle hover:border-white/20 text-text-muted hover:text-text-main transition-colors text-[11px] font-mono"
+                title={hudHotkey ? `Toggle always-on-top HUD (${hudHotkey})` : "Toggle always-on-top HUD"}
+              >
+                hud
+              </button>
+            )}
+
             <button
               onClick={() => void requestBriefing()}
               className="px-2.5 py-1 rounded-lg bg-surface border border-subtle hover:border-white/20 text-text-muted hover:text-text-main transition-colors text-[11px] font-mono"

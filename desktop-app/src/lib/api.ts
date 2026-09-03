@@ -757,3 +757,27 @@ export async function fetchBriefing(): Promise<Briefing> {
 }
 
 export const AWARENESS_STREAM_URL = `${API_BASE_URL}/api/awareness/stream`;
+
+/**
+ * Non-streaming chat turn. Used by the HUD, which speaks the final answer
+ * rather than rendering tokens as they arrive.
+ */
+export async function sendChatApi(data: {
+  message: string;
+  session_id: string;
+  project_id?: string;
+  chat_mode?: "WORKSPACE" | "SYSTEM";
+}): Promise<{ response: string; model: string; status: string; session_id: string }> {
+  const res = await fetch(`${API_BASE_URL}/chat`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    throw new Error(`Chat failed: HTTP ${res.status}`);
+  }
+  return res.json();
+}

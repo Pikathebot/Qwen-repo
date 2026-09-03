@@ -15,6 +15,16 @@
       "shell": {
         "all": false,
         "open": true
+      },
+      "globalShortcut": {
+        "all": true
+      },
+      "window": {
+        "all": false,
+        "show": true,
+        "hide": true,
+        "setFocus": true,
+        "startDragging": true
       }
     },
     "bundle": {
@@ -34,6 +44,7 @@
     },
     "windows": [
       {
+        "label": "main",
         "fullscreen": false,
         "resizable": true,
         "title": "Jarvis - Local AI Command Center",
@@ -43,6 +54,20 @@
         "minHeight": 600,
         "decorations": true,
         "center": true
+      },
+      {
+        "label": "hud",
+        "url": "hud.html",
+        "title": "Jarvis HUD",
+        "width": 460,
+        "height": 108,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "focus": false
       }
     ]
   }
