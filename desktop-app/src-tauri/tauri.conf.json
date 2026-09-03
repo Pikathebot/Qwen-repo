@@ -57,7 +57,7 @@
       },
       {
         "label": "hud",
-        "url": "hud.html",
+        "url": "hud",
         "title": "Jarvis HUD",
         "width": 460,
         "height": 108,
