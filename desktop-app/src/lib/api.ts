@@ -5,6 +5,8 @@ import {
   GovernorTelemetry,
   HealthResponse,
   MemoryItem,
+  PersonaOverrides,
+  PersonaStatus,
   Project,
   ProjectFile,
   Session,
@@ -541,6 +543,64 @@ export async function toggleVoiceOutputApi(enabled: boolean): Promise<{
   });
   if (!res.ok) {
     throw new Error(`Failed to toggle voice output: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+// ==========================================
+// Persona APIs
+// ==========================================
+
+export async function fetchPersona(): Promise<PersonaStatus> {
+  const res = await fetch(`${API_BASE_URL}/api/persona`, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch persona: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function setPersonaApi(personaId: string): Promise<PersonaStatus> {
+  const res = await fetch(`${API_BASE_URL}/api/persona`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ persona_id: personaId }),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to set persona: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function setPersonaOverridesApi(
+  overrides: PersonaOverrides
+): Promise<PersonaStatus> {
+  const res = await fetch(`${API_BASE_URL}/api/persona/overrides`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(overrides),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to update persona: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function clearPersonaOverridesApi(): Promise<PersonaStatus> {
+  const res = await fetch(`${API_BASE_URL}/api/persona/overrides`, {
+    method: "DELETE",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to reset persona: HTTP ${res.status}`);
   }
   return res.json();
 }

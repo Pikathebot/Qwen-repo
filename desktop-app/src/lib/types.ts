@@ -309,3 +309,40 @@ export interface SSEEventCallbacks {
 }
 
 
+
+// ==========================================
+// Persona
+// ==========================================
+
+export interface PersonaProfile {
+  id: string;
+  name: string;
+  description: string;
+  address_term: string;
+  voice_id: string;
+  tone_directives: string[];
+  acknowledgements: string[];
+  greeting: string;
+  max_speech_sentences: number;
+}
+
+export interface PersonaSummary {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface PersonaOverrides {
+  address_term?: string;
+  voice_id?: string;
+  greeting?: string;
+  max_speech_sentences?: number;
+}
+
+export interface PersonaStatus {
+  active_id: string;
+  active: PersonaProfile;
+  overrides: PersonaOverrides;
+  available: PersonaSummary[];
+  available_voices: Record<string, string>;
+}

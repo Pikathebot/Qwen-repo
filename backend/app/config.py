@@ -57,6 +57,9 @@ class Settings(BaseSettings):
         alias="ALLOWED_CORS_ORIGINS"
     )
     max_upload_size_mb: int = Field(default=50, alias="MAX_UPLOAD_SIZE_MB")
+
+    # Persona (how Jarvis speaks; tool protocol is invariant)
+    persona_id: str = Field(default="jarvis", alias="PERSONA_ID")
     terminal_enabled: bool = Field(default=False, alias="TERMINAL_ENABLED")
 
     web_search_enabled: bool = Field(default=False, alias="WEB_SEARCH_ENABLED")

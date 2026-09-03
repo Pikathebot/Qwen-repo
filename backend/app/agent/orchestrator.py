@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator, Optional
 from sqlmodel import select
 
 from app.config import settings, MAX_TOOL_CALLS_PER_TURN
+from app.persona import persona_manager
 from app.agent.tools.registry import AVAILABLE_TOOLS, execute_tool, get_tool_schema, get_relevant_tools
 from app.agent.permissions import (
     evaluate_tool_calls_batch,
@@ -199,8 +200,8 @@ def extract_tool_calls_from_text(content: str, user_prompt: str = "") -> tuple[s
     return content, []
 
 
-DEFAULT_SYSTEM_PROMPT = (
-    "You are Jarvis, a highly capable local AI assistant running on Windows with direct access to tools, memory, and skills.\n"
+TOOL_PROTOCOL_RULES = (
+    "CAPABILITIES: you run locally on Windows with direct access to tools, memory, skills and hardware telemetry.\n"
     "CRITICAL RULES:\n"
     "1. NEVER output conversational plans or raw JSON code blocks in your text describing tools you want to run. When an action is needed, directly invoke the tool.\n"
     "2. If the user explicitly asks to create or save a file on disk (e.g. 'save to test.py' or 'create file ...'), invoke 'write_file(file_path=..., content=...)'. If the user simply asks a coding question, asks to explain something, or asks to write a snippet/script without specifying saving to a file, provide the complete, fully-implemented code directly in markdown in your response.\n"
@@ -220,6 +221,16 @@ DEFAULT_SYSTEM_PROMPT = (
     "16. Strip surrounding quotation marks from user queries if present.\n"
     "17. Always use clean relative workspace paths (e.g. '.', 'backend/app', 'scripts', 'docs')."
 )
+
+
+def build_system_prompt(persona: Optional[Any] = None) -> str:
+    """
+    Compose the system prompt: persona voice first, then the invariant tool
+    protocol. The persona shapes manner only - it can never change what tools
+    exist or how they must be invoked.
+    """
+    active = persona or persona_manager.get_active()
+    return f"{active.build_prompt_preamble()}\n\n{TOOL_PROTOCOL_RULES}"
 
 
 class _LegacyClientAdapter(ModelProvider):
@@ -505,7 +516,8 @@ class AgentOrchestrator:
             return
         try:
             clean_text, _ = extract_tool_calls_from_text(text)
-            clean_text = self.tts_engine.sanitize_text(clean_text or text)
+            clean_text = persona_manager.shape_for_speech(clean_text or text)
+            clean_text = self.tts_engine.sanitize_text(clean_text)
             if clean_text:
                 audio_bytes = self.tts_engine.synthesize(clean_text)
                 if audio_bytes:
@@ -618,7 +630,7 @@ class AgentOrchestrator:
             logger.info("Active dynamic skills matched: %s", active_skill_names)
 
         skill_prompt_injection = self.skills_loader.build_skill_prompt_injection(matched_skills)
-        base_system_prompt = (system_prompt or DEFAULT_SYSTEM_PROMPT) + skill_prompt_injection
+        base_system_prompt = (system_prompt or build_system_prompt()) + skill_prompt_injection
 
         # 3. Compaction Evaluation (Step 4C)
         history = self.memory_store.get_messages(active_session_id)
@@ -1232,7 +1244,7 @@ class AgentOrchestrator:
         matched_skills = self.skills_loader.match_skills(user_message)
         active_skill_names = [s.name for s in matched_skills]
         skill_prompt_injection = self.skills_loader.build_skill_prompt_injection(matched_skills)
-        base_system_prompt = (system_prompt or DEFAULT_SYSTEM_PROMPT) + skill_prompt_injection
+        base_system_prompt = (system_prompt or build_system_prompt()) + skill_prompt_injection
 
         # 3. RAG Retrieval in WORKSPACE mode
         retrieved_chunks = []

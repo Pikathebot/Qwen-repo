@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { UseGovernorReturn } from "@/hooks/useGovernor";
+import { usePersona } from "@/hooks/usePersona";
 
 interface SettingsDialogProps {
   isOpen: boolean;
@@ -20,6 +21,7 @@ export function SettingsDialog({
 }: SettingsDialogProps) {
   const { availableModels, configuredModel, activeBackend, ollamaConnected } = governor;
   const [customModelInput, setCustomModelInput] = useState("");
+  const { persona, selectPersona, applyOverrides, resetOverrides } = usePersona();
 
   if (!isOpen) return null;
 
@@ -107,6 +109,94 @@ export function SettingsDialog({
                   {m}
                 </button>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* Persona */}
+        {persona && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-medium text-text-muted">Persona</label>
+              {Object.keys(persona.overrides).length > 0 && (
+                <button
+                  onClick={() => void resetOverrides()}
+                  className="text-[11px] text-text-muted hover:text-cyan-accent transition-colors"
+                >
+                  Reset customizations
+                </button>
+              )}
+            </div>
+            <div className="grid grid-cols-1 gap-2">
+              {persona.available.map((p) => {
+                const isSelected = persona.active_id === p.id;
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => void selectPersona(p.id)}
+                    className={`flex items-start justify-between p-3 rounded-xl border text-left transition-all ${
+                      isSelected
+                        ? "bg-cyan-accent/10 border-cyan-accent/40 text-text-main"
+                        : "bg-void/60 border-subtle hover:border-white/20 text-text-muted"
+                    }`}
+                  >
+                    <div className="pr-3">
+                      <div className="text-xs font-medium text-text-main capitalize">{p.id}</div>
+                      <div className="text-[11px] text-text-muted mt-0.5">{p.description}</div>
+                    </div>
+                    {isSelected && (
+                      <span className="shrink-0 px-2 py-0.5 text-[10px] font-semibold bg-cyan-accent/20 text-cyan-accent rounded-full border border-cyan-accent/30">
+                        Active
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <div className="space-y-1">
+                <label className="text-[11px] text-text-muted">Addresses you as</label>
+                <input
+                  value={persona.active.address_term}
+                  placeholder="none"
+                  onChange={(e) => void applyOverrides({ address_term: e.target.value })}
+                  className="w-full px-2.5 py-1.5 bg-void border border-subtle rounded-lg text-xs text-text-main outline-none focus:border-cyan-accent/40"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[11px] text-text-muted">Spoken voice</label>
+                <select
+                  value={persona.active.voice_id}
+                  onChange={(e) => void applyOverrides({ voice_id: e.target.value })}
+                  className="w-full px-2.5 py-1.5 bg-void border border-subtle rounded-lg text-xs text-text-main outline-none focus:border-cyan-accent/40"
+                >
+                  {Object.keys(persona.available_voices).map((v) => (
+                    <option key={v} value={v}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[11px] text-text-muted">
+                Spoken reply length:{" "}
+                {persona.active.max_speech_sentences === 0
+                  ? "read everything aloud"
+                  : `first ${persona.active.max_speech_sentences} sentence(s)`}
+              </label>
+              <input
+                type="range"
+                min={0}
+                max={10}
+                value={persona.active.max_speech_sentences}
+                onChange={(e) =>
+                  void applyOverrides({ max_speech_sentences: Number(e.target.value) })
+                }
+                className="w-full accent-cyan-accent"
+              />
             </div>
           </div>
         )}

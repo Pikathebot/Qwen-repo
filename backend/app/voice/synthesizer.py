@@ -3,6 +3,8 @@ import re
 from typing import Any, Optional
 import io
 
+from app.persona.speech import sanitize_markdown_for_speech
+
 logger = logging.getLogger("jarvis.voice.synthesizer")
 
 AVAILABLE_NEURAL_VOICES = {
@@ -27,25 +29,7 @@ class VoiceSynthesizer:
         """
         Strip markdown tags, code blocks, and URLs to ensure natural vocalization.
         """
-        if not text:
-            return ""
-
-        # Remove code blocks
-        clean = re.sub(r"```[\s\S]*?```", " [code block omitted] ", text)
-        # Remove inline code
-        clean = re.sub(r"`([^`]+)`", r"\1", clean)
-        # Remove markdown bold/italics
-        clean = re.sub(r"[*_]{1,3}([^*_]+)[*_]{1,3}", r"\1", clean)
-        # Remove markdown links [text](url) -> text
-        clean = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", clean)
-        # Remove markdown headers
-        clean = re.sub(r"^#{1,6}\s+", "", clean, flags=re.MULTILINE)
-        # Remove emojis and bullet points
-        clean = re.sub(r"[•⚡🎯📝⚠️📊🔍💬✓]", "", clean)
-        # Collapse whitespace
-        clean = re.sub(r"\s+", " ", clean).strip()
-
-        return clean
+        return sanitize_markdown_for_speech(text)
 
     def synthesize(self, text: str) -> dict[str, Any]:
         """

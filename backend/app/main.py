@@ -37,7 +37,7 @@ from app.voice.transcriber import AudioTranscriber
 from app.voice.synthesizer import VoiceSynthesizer
 from app.agent.tts.chatterbox_engine import ChatterboxEngine
 from app.agent.tools.audio_playback import is_playing as is_audio_playing, stop_playback as stop_audio_playback
-from app.routers import projects_router, artifacts_router, memories_router
+from app.routers import projects_router, artifacts_router, memories_router, persona_router
 
 
 
@@ -256,6 +256,7 @@ app.add_middleware(
 app.include_router(projects_router)
 app.include_router(artifacts_router)
 app.include_router(memories_router)
+app.include_router(persona_router)
 
 
 
