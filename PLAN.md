@@ -93,6 +93,8 @@ Everything above makes Jarvis *capable*. This layer is what makes it behave like
 
 - [x] **HUD overlay** (`desktop-app/src/app/hud/`, `src-tauri/src/main.rs`) — A transparent, always-on-top window summoned from anywhere with `Ctrl+Shift+J`. Voice orb, two telemetry rings, and the last thing said in either direction. It runs its own voice session so an ambient question does not interleave with the main window's work.
 
+- [x] **Scheduled routines** (`backend/app/routines/`) — Time-of-day briefings and custom messages ("every weekday at 8am, give me the status briefing"), persisted to `data/routines.json`. The scheduler polls the wall clock and fires through the awareness monitor's own `emit()` channel, so a routine is delivered, spoken, and shown in the tray exactly like any other observation — no separate frontend plumbing needed. Managed from Settings → Scheduled Routines (`SettingsDialog.tsx`); `POST /api/routines/{id}/run` previews one immediately.
+
 ### Key endpoints
 
 | Area | Endpoints |
@@ -100,11 +102,11 @@ Everything above makes Jarvis *capable*. This layer is what makes it behave like
 | Persona | `GET/POST /api/persona`, `PATCH/DELETE /api/persona/overrides`, `POST /api/persona/speech-preview` |
 | Voice | `POST /api/voice/listen`, `POST /api/voice/say`, `POST /api/voice/session/{id}/{start,stop,arm,state}`, `GET /api/voice/hands-free` |
 | Awareness | `GET /api/awareness/{status,observations,briefing,config,stream}`, `POST /api/awareness/poll`, `PATCH /api/awareness/config` |
+| Routines | `GET/POST /api/routines`, `PATCH/DELETE /api/routines/{id}`, `POST /api/routines/{id}/run` |
 
 ---
 
 ## 4. Next Milestones
 
-- **Scheduled routines**: time-triggered briefings (a morning briefing without being asked) on top of the awareness monitor.
 - **Proactive tool use**: let Jarvis act on an observation, not just report it (evict the model before VRAM is exhausted rather than after).
 - **Voice-driven confirmations**: speak the pending-confirmation prompt and accept a spoken approval for `CONFIRMATION_REQUIRED` tools.

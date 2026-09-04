@@ -467,3 +467,41 @@ export interface Briefing {
   persona_id: string;
   snapshot: AwarenessSnapshot;
 }
+
+// ==========================================
+// Scheduled Routines
+// ==========================================
+
+export type RoutineKind = "briefing" | "message";
+
+export interface Routine {
+  id: string;
+  name: string;
+  time: string; // "HH:MM", 24-hour local time
+  kind: RoutineKind;
+  message: string;
+  days: number[]; // 0=Mon .. 6=Sun; empty = every day
+  enabled: boolean;
+  last_fired_date: string | null;
+}
+
+export interface RoutineSchedulerStatus {
+  enabled: boolean;
+  running: boolean;
+  check_seconds: number;
+  count: number;
+}
+
+export interface RoutinesResponse {
+  routines: Routine[];
+  scheduler: RoutineSchedulerStatus;
+}
+
+export interface RoutineInput {
+  name: string;
+  time: string;
+  kind: RoutineKind;
+  message?: string;
+  days?: number[];
+  enabled?: boolean;
+}

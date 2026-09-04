@@ -3,6 +3,8 @@
 import React, { useState } from "react";
 import { UseGovernorReturn } from "@/hooks/useGovernor";
 import { usePersona } from "@/hooks/usePersona";
+import { useRoutines } from "@/hooks/useRoutines";
+import { RoutineKind } from "@/lib/types";
 
 interface SettingsDialogProps {
   isOpen: boolean;
@@ -22,8 +24,29 @@ export function SettingsDialog({
   const { availableModels, configuredModel, activeBackend, ollamaConnected } = governor;
   const [customModelInput, setCustomModelInput] = useState("");
   const { persona, selectPersona, applyOverrides, resetOverrides } = usePersona();
+  const { routines, createRoutine, updateRoutine, deleteRoutine, runNow } = useRoutines();
+  const [newRoutineName, setNewRoutineName] = useState("");
+  const [newRoutineTime, setNewRoutineTime] = useState("08:00");
+  const [newRoutineKind, setNewRoutineKind] = useState<RoutineKind>("briefing");
+  const [newRoutineMessage, setNewRoutineMessage] = useState("");
 
   if (!isOpen) return null;
+
+  const handleAddRoutine = () => {
+    const name = newRoutineName.trim();
+    if (!name) return;
+    if (newRoutineKind === "message" && !newRoutineMessage.trim()) return;
+    void createRoutine({
+      name,
+      time: newRoutineTime,
+      kind: newRoutineKind,
+      message: newRoutineMessage.trim(),
+    });
+    setNewRoutineName("");
+    setNewRoutineMessage("");
+  };
+
+  const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
   const defaultPresets = [
     { label: "Default Main (Qwen3.5-9B)", value: "main", desc: "Highest intelligence & deep reasoning" },
@@ -200,6 +223,91 @@ export function SettingsDialog({
             </div>
           </div>
         )}
+
+        {/* Scheduled Routines */}
+        <div className="space-y-2">
+          <label className="text-xs font-medium text-text-muted">Scheduled Routines</label>
+
+          {routines.length > 0 && (
+            <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+              {routines.map((r) => (
+                <div
+                  key={r.id}
+                  className="flex items-center justify-between gap-2 p-2.5 rounded-xl border border-subtle bg-void/60"
+                >
+                  <button
+                    onClick={() => void updateRoutine(r.id, { enabled: !r.enabled })}
+                    className={`shrink-0 w-2 h-2 rounded-full ${
+                      r.enabled ? "bg-emerald-accent" : "bg-text-muted/40"
+                    }`}
+                    aria-label={r.enabled ? "Disable routine" : "Enable routine"}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-medium text-text-main truncate">{r.name}</div>
+                    <div className="text-[11px] text-text-muted mt-0.5">
+                      {r.time} · {r.kind === "briefing" ? "status briefing" : "message"}
+                      {r.days.length > 0
+                        ? ` · ${r.days.map((d) => WEEKDAY_LABELS[d]).join(", ")}`
+                        : " · every day"}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => void runNow(r.id)}
+                    className="shrink-0 text-[11px] text-text-muted hover:text-cyan-accent transition-colors"
+                  >
+                    Test
+                  </button>
+                  <button
+                    onClick={() => void deleteRoutine(r.id)}
+                    className="shrink-0 text-[11px] text-text-muted hover:text-rose-accent transition-colors"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="p-2.5 rounded-xl border border-subtle bg-void/40 space-y-2">
+            <input
+              value={newRoutineName}
+              onChange={(e) => setNewRoutineName(e.target.value)}
+              placeholder="e.g. Morning Briefing"
+              className="w-full px-2.5 py-1.5 bg-void border border-subtle rounded-lg text-xs text-text-main outline-none focus:border-cyan-accent/40"
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                type="time"
+                value={newRoutineTime}
+                onChange={(e) => setNewRoutineTime(e.target.value)}
+                className="w-full px-2.5 py-1.5 bg-void border border-subtle rounded-lg text-xs text-text-main outline-none focus:border-cyan-accent/40"
+              />
+              <select
+                value={newRoutineKind}
+                onChange={(e) => setNewRoutineKind(e.target.value as RoutineKind)}
+                className="w-full px-2.5 py-1.5 bg-void border border-subtle rounded-lg text-xs text-text-main outline-none focus:border-cyan-accent/40"
+              >
+                <option value="briefing">Status briefing</option>
+                <option value="message">Custom message</option>
+              </select>
+            </div>
+            {newRoutineKind === "message" && (
+              <input
+                value={newRoutineMessage}
+                onChange={(e) => setNewRoutineMessage(e.target.value)}
+                placeholder="What should Jarvis say?"
+                className="w-full px-2.5 py-1.5 bg-void border border-subtle rounded-lg text-xs text-text-main outline-none focus:border-cyan-accent/40"
+              />
+            )}
+            <button
+              onClick={handleAddRoutine}
+              disabled={!newRoutineName.trim() || (newRoutineKind === "message" && !newRoutineMessage.trim())}
+              className="w-full px-3 py-1.5 bg-cyan-accent/10 hover:bg-cyan-accent/20 disabled:opacity-40 disabled:cursor-not-allowed text-cyan-accent border border-cyan-accent/30 rounded-lg text-xs font-medium transition-colors"
+            >
+              Add routine
+            </button>
+          </div>
+        </div>
 
         {/* Actions */}
         <div className="flex justify-end gap-2 pt-2 border-t border-subtle">

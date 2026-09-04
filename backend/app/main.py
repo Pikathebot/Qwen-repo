@@ -44,8 +44,11 @@ from app.routers import (
     persona_router,
     voice_router,
     awareness_router,
+    routines_router,
 )
 from app.awareness.monitor import AwarenessMonitor
+from app.persona import persona_manager
+from app.routines.scheduler import RoutineScheduler
 
 
 
@@ -198,6 +201,15 @@ awareness_monitor = AwarenessMonitor(
 )
 awareness_monitor.enabled = settings.awareness_enabled
 
+# Scheduled routines: time-triggered briefings/messages, delivered through
+# the same observation channel as ambient awareness.
+routine_scheduler = RoutineScheduler(
+    monitor=awareness_monitor,
+    persona_provider=persona_manager.get_active,
+    check_seconds=settings.routines_check_seconds,
+)
+routine_scheduler.enabled = settings.routines_enabled
+
 
 
 @asynccontextmanager
@@ -225,6 +237,9 @@ async def lifespan(app: FastAPI):
     if settings.awareness_enabled:
         await awareness_monitor.start()
 
+    if settings.routines_enabled:
+        await routine_scheduler.start()
+
     logger.info("==================================================================")
     logger.info("  JARVIS Backend is READY and actively listening for requests!")
     logger.info("  Health endpoint: http://127.0.0.1:8000/health")
@@ -243,6 +258,7 @@ async def lifespan(app: FastAPI):
     chatterbox_engine.unload_model()
     wake_detector.stop_listening()
     await awareness_monitor.stop()
+    await routine_scheduler.stop()
     if settings.governor_enabled:
         await process_watcher.stop()
         await governor.stop()
@@ -279,6 +295,7 @@ app.include_router(memories_router)
 app.include_router(persona_router)
 app.include_router(voice_router)
 app.include_router(awareness_router)
+app.include_router(routines_router)
 
 
 

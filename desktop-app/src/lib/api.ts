@@ -17,6 +17,9 @@ import {
   VoiceState,
   Project,
   ProjectFile,
+  Routine,
+  RoutineInput,
+  RoutinesResponse,
   Session,
   UnloadResponse,
 } from "./types";
@@ -757,6 +760,69 @@ export async function fetchBriefing(): Promise<Briefing> {
 }
 
 export const AWARENESS_STREAM_URL = `${API_BASE_URL}/api/awareness/stream`;
+
+// ==========================================
+// Scheduled Routines APIs
+// ==========================================
+
+export async function fetchRoutines(): Promise<RoutinesResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/routines`, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch routines: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function createRoutineApi(input: RoutineInput): Promise<Routine> {
+  const res = await fetch(`${API_BASE_URL}/api/routines`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to create routine: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function updateRoutineApi(
+  routineId: string,
+  input: Partial<RoutineInput>
+): Promise<Routine> {
+  const res = await fetch(`${API_BASE_URL}/api/routines/${encodeURIComponent(routineId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to update routine: HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function deleteRoutineApi(routineId: string): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/routines/${encodeURIComponent(routineId)}`, {
+    method: "DELETE",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to delete routine: HTTP ${res.status}`);
+  }
+}
+
+export async function runRoutineNowApi(routineId: string): Promise<Observation> {
+  const res = await fetch(`${API_BASE_URL}/api/routines/${encodeURIComponent(routineId)}/run`, {
+    method: "POST",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to run routine: HTTP ${res.status}`);
+  }
+  return res.json();
+}
 
 /**
  * Non-streaming chat turn. Used by the HUD, which speaks the final answer

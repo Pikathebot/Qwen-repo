@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     awareness_restate_cooldown_seconds: float = Field(
         default=300.0, alias="AWARENESS_RESTATE_COOLDOWN_SECONDS"
     )
+    # Scheduled routines (time-triggered briefings/messages)
+    routines_enabled: bool = Field(default=True, alias="ROUTINES_ENABLED")
+    routines_check_seconds: float = Field(default=20.0, alias="ROUTINES_CHECK_SECONDS")
+
     terminal_enabled: bool = Field(default=False, alias="TERMINAL_ENABLED")
 
     web_search_enabled: bool = Field(default=False, alias="WEB_SEARCH_ENABLED")

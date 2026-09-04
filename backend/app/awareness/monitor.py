@@ -201,6 +201,18 @@ class AwarenessMonitor:
                     # A stalled client must not block the monitor.
                     logger.debug("Dropping observation for a saturated subscriber")
 
+    def emit(self, observation: Observation) -> Observation:
+        """
+        Publish an observation from outside the rule loop (e.g. a scheduled
+        routine). Goes through the same history/SSE/speak path as a rule
+        trip, so callers other than the monitor can still interrupt the user.
+        """
+        self._seq += 1
+        observation.seq = self._seq
+        self._history.append(observation)
+        self._publish([observation])
+        return observation
+
     async def poll_once(self) -> list[Observation]:
         snapshot = await asyncio.to_thread(self.collect_snapshot)
         observations = self.evaluate(snapshot)
