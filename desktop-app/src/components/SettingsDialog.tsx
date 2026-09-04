@@ -1,9 +1,10 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { UseGovernorReturn } from "@/hooks/useGovernor";
 import { usePersona } from "@/hooks/usePersona";
 import { useRoutines } from "@/hooks/useRoutines";
+import { fetchAwarenessStatus, updateAwarenessConfigApi } from "@/lib/api";
 import { RoutineKind } from "@/lib/types";
 
 interface SettingsDialogProps {
@@ -29,8 +30,28 @@ export function SettingsDialog({
   const [newRoutineTime, setNewRoutineTime] = useState("08:00");
   const [newRoutineKind, setNewRoutineKind] = useState<RoutineKind>("briefing");
   const [newRoutineMessage, setNewRoutineMessage] = useState("");
+  const [proactiveActionsEnabled, setProactiveActionsEnabled] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    void fetchAwarenessStatus().then((s) => {
+      if (!cancelled) setProactiveActionsEnabled(s.monitor.actions_enabled);
+    }).catch(() => null);
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
 
   if (!isOpen) return null;
+
+  const toggleProactiveActions = () => {
+    const next = !proactiveActionsEnabled;
+    setProactiveActionsEnabled(next);
+    void updateAwarenessConfigApi({ actions_enabled: next }).catch(() =>
+      setProactiveActionsEnabled(!next)
+    );
+  };
 
   const handleAddRoutine = () => {
     const name = newRoutineName.trim();
@@ -221,6 +242,32 @@ export function SettingsDialog({
                 className="w-full accent-cyan-accent"
               />
             </div>
+          </div>
+        )}
+
+        {/* Proactive Actions */}
+        {proactiveActionsEnabled !== null && (
+          <div className="p-3.5 bg-void rounded-xl border border-subtle flex items-center justify-between gap-3">
+            <div>
+              <div className="text-xs font-medium text-text-main">Proactive actions</div>
+              <div className="text-[11px] text-text-muted mt-0.5">
+                Let Jarvis act on a critical condition (e.g. evict the model before VRAM runs
+                out) instead of only reporting it.
+              </div>
+            </div>
+            <button
+              onClick={toggleProactiveActions}
+              className={`shrink-0 w-9 h-5 rounded-full transition-colors relative ${
+                proactiveActionsEnabled ? "bg-cyan-accent/60" : "bg-white/10"
+              }`}
+              aria-label="Toggle proactive actions"
+            >
+              <span
+                className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                  proactiveActionsEnabled ? "translate-x-4" : "translate-x-0"
+                }`}
+              />
+            </button>
           </div>
         )}
 

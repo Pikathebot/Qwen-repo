@@ -242,6 +242,105 @@ async def test_poll_once_samples_and_evaluates(monitor):
     assert [o.kind for o in observations] == ["disk_space"]
 
 
+@pytest.mark.asyncio
+async def test_a_critical_observation_triggers_its_registered_action():
+    acted: list[str] = []
+
+    async def evict(observation: Observation):
+        acted.append(observation.kind)
+        return "evicted"
+
+    monitor = AwarenessMonitor(actions={"vram_pressure": evict})
+    monitor.collect_snapshot = lambda: snapshot(vram_util_percent=98.0)
+
+    await monitor.poll_once()
+    await asyncio.sleep(0)  # let the fire-and-forget action task run
+
+    assert acted == ["vram_pressure"]
+    assert [o.kind for o in monitor.recent()] == ["vram_pressure", "vram_pressure_action"]
+
+
+@pytest.mark.asyncio
+async def test_a_warning_does_not_trigger_the_action_only_critical_does():
+    acted: list[str] = []
+
+    async def evict(observation: Observation):
+        acted.append(observation.kind)
+        return "evicted"
+
+    monitor = AwarenessMonitor(actions={"vram_pressure": evict})
+    monitor.collect_snapshot = lambda: snapshot(vram_util_percent=90.0)  # warning, not critical
+
+    await monitor.poll_once()
+    await asyncio.sleep(0)
+
+    assert acted == []
+
+
+@pytest.mark.asyncio
+async def test_action_fires_once_per_escalation_not_every_poll():
+    calls = 0
+
+    async def evict(observation: Observation):
+        nonlocal calls
+        calls += 1
+        return "evicted"
+
+    monitor = AwarenessMonitor(actions={"vram_pressure": evict})
+    hot = snapshot(vram_util_percent=98.0)
+    monitor.collect_snapshot = lambda: hot
+
+    await monitor.poll_once()
+    await asyncio.sleep(0)
+    await monitor.poll_once()  # still critical: must not re-fire
+    await asyncio.sleep(0)
+
+    assert calls == 1
+
+    # Recover, then re-trip: the action re-arms.
+    monitor.collect_snapshot = lambda: snapshot()
+    await monitor.poll_once()
+    monitor.collect_snapshot = lambda: hot
+    await monitor.poll_once()
+    await asyncio.sleep(0)
+
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_actions_enabled_flag_suppresses_the_action():
+    acted: list[str] = []
+
+    async def evict(observation: Observation):
+        acted.append(observation.kind)
+        return "evicted"
+
+    monitor = AwarenessMonitor(actions={"vram_pressure": evict})
+    monitor.actions_enabled = False
+    monitor.collect_snapshot = lambda: snapshot(vram_util_percent=98.0)
+
+    await monitor.poll_once()
+    await asyncio.sleep(0)
+
+    assert acted == []
+
+
+@pytest.mark.asyncio
+async def test_a_raising_action_does_not_crash_the_poll():
+    async def broken(observation: Observation):
+        raise RuntimeError("eviction failed")
+
+    monitor = AwarenessMonitor(actions={"vram_pressure": broken})
+    monitor.collect_snapshot = lambda: snapshot(vram_util_percent=98.0)
+
+    observations = await monitor.poll_once()
+    await asyncio.sleep(0)
+
+    assert [o.kind for o in observations] == ["vram_pressure"]
+    # No follow-up "acted" observation, since the action failed.
+    assert [o.kind for o in monitor.recent()] == ["vram_pressure"]
+
+
 def test_collect_snapshot_survives_a_broken_governor():
     class _Broken:
         def collect_metrics(self):

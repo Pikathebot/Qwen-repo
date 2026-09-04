@@ -7,6 +7,7 @@ import {
   MemoryItem,
   PersonaOverrides,
   PersonaStatus,
+  AwarenessMonitorStatus,
   AwarenessStatus,
   Briefing,
   HandsFreeStatus,
@@ -760,6 +761,26 @@ export async function fetchBriefing(): Promise<Briefing> {
 }
 
 export const AWARENESS_STREAM_URL = `${API_BASE_URL}/api/awareness/stream`;
+
+export async function updateAwarenessConfigApi(
+  patch: Partial<{
+    enabled: boolean;
+    poll_seconds: number;
+    restate_cooldown_seconds: number;
+    min_speak_severity: string;
+    actions_enabled: boolean;
+  }>
+): Promise<AwarenessMonitorStatus> {
+  const res = await fetch(`${API_BASE_URL}/api/awareness/config`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to update awareness config: HTTP ${res.status}`);
+  }
+  return res.json();
+}
 
 // ==========================================
 // Scheduled Routines APIs

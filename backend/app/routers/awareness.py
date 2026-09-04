@@ -33,6 +33,9 @@ class AwarenessConfigRequest(BaseModel):
     min_speak_severity: Optional[str] = Field(
         default=None, description="info | notice | warning | critical"
     )
+    actions_enabled: Optional[bool] = Field(
+        default=None, description="Whether critical observations may trigger a real action"
+    )
 
 
 def _render(observation, persona) -> dict[str, Any]:
@@ -181,5 +184,7 @@ async def update_config(req: AwarenessConfigRequest) -> dict[str, Any]:
                 detail="min_speak_severity must be one of: "
                 + ", ".join(s.value for s in Severity),
             )
+    if req.actions_enabled is not None:
+        monitor.actions_enabled = req.actions_enabled
 
     return monitor.status()

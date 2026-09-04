@@ -450,6 +450,8 @@ export interface AwarenessMonitorStatus {
   poll_seconds: number;
   restate_cooldown_seconds: number;
   min_speak_severity: ObservationSeverity;
+  actions_enabled: boolean;
+  actionable_kinds: string[];
   active_conditions: string[];
   subscribers: number;
   latest_seq: number;

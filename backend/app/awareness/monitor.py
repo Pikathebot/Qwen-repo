@@ -14,12 +14,17 @@ import asyncio
 import logging
 import time
 from collections import deque
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Awaitable, Callable, Iterable, Optional
 
 from app.awareness.observations import Observation, Severity, SystemSnapshot
 from app.awareness.rules import DEFAULT_RULES, RECOVERY_TEXT, RuleFn, Thresholds
 
 logger = logging.getLogger("jarvis.awareness")
+
+# A proactive action: given the observation that tripped it, does something
+# about it and returns a sentence describing what it did (or None to stay
+# silent — e.g. because there was nothing left to do).
+ActionFn = Callable[[Observation], Awaitable[Optional[str]]]
 
 
 class AwarenessMonitor:
@@ -34,6 +39,8 @@ class AwarenessMonitor:
         restate_cooldown_seconds: float = 300.0,
         history_size: int = 100,
         min_speak_severity: Severity = Severity.WARNING,
+        actions: Optional[dict[str, ActionFn]] = None,
+        action_min_severity: Severity = Severity.CRITICAL,
     ):
         self.governor = governor
         self.rules = tuple(rules) if rules is not None else DEFAULT_RULES
@@ -41,12 +48,21 @@ class AwarenessMonitor:
         self.poll_seconds = poll_seconds
         self.restate_cooldown_seconds = restate_cooldown_seconds
         self.min_speak_severity = min_speak_severity
+        # kind -> action. Only ever invoked once per escalation into
+        # action_min_severity, not on every poll while the condition holds.
+        self.actions: dict[str, ActionFn] = dict(actions) if actions else {}
+        self.action_min_severity = action_min_severity
+        self.actions_enabled = True
 
         self.enabled = True
         self._history: deque[Observation] = deque(maxlen=history_size)
         self._seq = 0
         # kind -> (severity, last_emitted_at)
         self._active: dict[str, tuple[Severity, float]] = {}
+        # Kinds an action has already been fired for during their current
+        # active streak, so a still-critical condition does not re-trigger
+        # the action every poll.
+        self._actioned: set[str] = set()
         self._last_snapshot: Optional[SystemSnapshot] = None
         self._subscribers: list[asyncio.Queue] = []
         self._task: Optional[asyncio.Task] = None
@@ -155,6 +171,7 @@ class AwarenessMonitor:
             if kind in tripped:
                 continue
             del self._active[kind]
+            self._actioned.discard(kind)
             emitted.append(
                 Observation(
                     kind=kind,
@@ -213,11 +230,51 @@ class AwarenessMonitor:
         self._publish([observation])
         return observation
 
+    def _actionable(self, observations: list[Observation]) -> list[Observation]:
+        if not self.actions_enabled:
+            return []
+        due = []
+        for observation in observations:
+            if observation.resolved or observation.kind in self._actioned:
+                continue
+            if observation.severity.rank < self.action_min_severity.rank:
+                continue
+            if observation.kind not in self.actions:
+                continue
+            due.append(observation)
+        return due
+
+    async def _run_action(self, observation: Observation) -> None:
+        action = self.actions.get(observation.kind)
+        if action is None:
+            return
+        try:
+            spoken = await action(observation)
+        except Exception as e:
+            logger.warning("Proactive action for %s failed: %s", observation.kind, e)
+            return
+        if spoken:
+            self.emit(
+                Observation(
+                    kind=f"{observation.kind}_action",
+                    severity=Severity.NOTICE,
+                    title="Jarvis acted",
+                    detail=spoken,
+                    spoken=spoken,
+                    data={"triggered_by": observation.id},
+                )
+            )
+
     async def poll_once(self) -> list[Observation]:
         snapshot = await asyncio.to_thread(self.collect_snapshot)
         observations = self.evaluate(snapshot)
         if observations:
             self._publish(observations)
+
+        for observation in self._actionable(observations):
+            self._actioned.add(observation.kind)
+            asyncio.create_task(self._run_action(observation))
+
         return observations
 
     # ----------------------------------------------------------- lifecycle
@@ -279,6 +336,8 @@ class AwarenessMonitor:
             "poll_seconds": self.poll_seconds,
             "restate_cooldown_seconds": self.restate_cooldown_seconds,
             "min_speak_severity": self.min_speak_severity.value,
+            "actions_enabled": self.actions_enabled,
+            "actionable_kinds": sorted(self.actions),
             "active_conditions": self.active_observations(),
             "subscribers": len(self._subscribers),
             "latest_seq": self._seq,

@@ -95,6 +95,8 @@ Everything above makes Jarvis *capable*. This layer is what makes it behave like
 
 - [x] **Scheduled routines** (`backend/app/routines/`) — Time-of-day briefings and custom messages ("every weekday at 8am, give me the status briefing"), persisted to `data/routines.json`. The scheduler polls the wall clock and fires through the awareness monitor's own `emit()` channel, so a routine is delivered, spoken, and shown in the tray exactly like any other observation — no separate frontend plumbing needed. Managed from Settings → Scheduled Routines (`SettingsDialog.tsx`); `POST /api/routines/{id}/run` previews one immediately.
 
+- [x] **Proactive tool use** (`AwarenessMonitor.actions`, `backend/app/main.py`) — A kind of observation can carry a registered action: when it first escalates to CRITICAL, the monitor awaits the action, then emits a follow-up observation announcing what it did. Ships with one wired case — VRAM critical now evicts the model itself (`auto_unload_models()`) rather than only warning that eviction is imminent, which fires independently of and earlier than the governor's own reactive throttle (which additionally needs high GPU compute or ≥99% raw VRAM). An action fires once per escalation, never every poll, and re-arms after recovery. Toggle: Settings → "Proactive actions" (`PATCH /api/awareness/config {actions_enabled}`), default on (`PROACTIVE_ACTIONS_ENABLED`).
+
 ### Key endpoints
 
 | Area | Endpoints |
@@ -108,5 +110,5 @@ Everything above makes Jarvis *capable*. This layer is what makes it behave like
 
 ## 4. Next Milestones
 
-- **Proactive tool use**: let Jarvis act on an observation, not just report it (evict the model before VRAM is exhausted rather than after).
 - **Voice-driven confirmations**: speak the pending-confirmation prompt and accept a spoken approval for `CONFIRMATION_REQUIRED` tools.
+- **More proactive actions**: extend `AwarenessMonitor.actions` beyond VRAM eviction — e.g. nudge or close a heavy external app after a sustained `heavy_external_app` observation, or flag largest files/artifacts when `disk_space` goes critical.

@@ -201,6 +201,29 @@ awareness_monitor = AwarenessMonitor(
 )
 awareness_monitor.enabled = settings.awareness_enabled
 
+
+async def _evict_on_vram_critical(observation) -> Optional[str]:
+    """
+    Proactive action for a CRITICAL vram_pressure observation: evict the
+    model ourselves instead of waiting for the governor's own throttle
+    threshold (which additionally requires high GPU compute, or >=99% raw
+    VRAM) or for llama.cpp to fail an allocation outright.
+    """
+    if awareness_monitor.last_snapshot and awareness_monitor.last_snapshot.model_unloaded:
+        return None
+    try:
+        success = await auto_unload_models()
+    except Exception as e:
+        logger.warning("Proactive VRAM eviction failed: %s", e)
+        return None
+    if not success:
+        return None
+    return "VRAM was critical, so I evicted the model before it ran out."
+
+
+awareness_monitor.actions = {"vram_pressure": _evict_on_vram_critical}
+awareness_monitor.actions_enabled = settings.proactive_actions_enabled
+
 # Scheduled routines: time-triggered briefings/messages, delivered through
 # the same observation channel as ambient awareness.
 routine_scheduler = RoutineScheduler(

@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     awareness_restate_cooldown_seconds: float = Field(
         default=300.0, alias="AWARENESS_RESTATE_COOLDOWN_SECONDS"
     )
+    # Proactive tool use: let awareness observations trigger real actions
+    # (e.g. evict the model before VRAM is exhausted) rather than only report.
+    proactive_actions_enabled: bool = Field(default=True, alias="PROACTIVE_ACTIONS_ENABLED")
+
     # Scheduled routines (time-triggered briefings/messages)
     routines_enabled: bool = Field(default=True, alias="ROUTINES_ENABLED")
     routines_check_seconds: float = Field(default=20.0, alias="ROUTINES_CHECK_SECONDS")
