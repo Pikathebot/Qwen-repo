@@ -16,6 +16,7 @@ import { AwarenessTray } from "@/components/AwarenessTray";
 import { fetchActiveProject, fetchArtifacts } from "@/lib/api";
 import { Observation } from "@/lib/types";
 import { getHudHotkey, isTauri, toggleHudWindow } from "@/lib/tauri";
+import { parseConfirmationIntent } from "@/lib/voice-intent";
 
 export default function Home() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -50,9 +51,31 @@ export default function Home() {
 
   // A voice turn is answered out loud once the agent finishes streaming.
   const awaitingVoiceReplyRef = useRef(false);
+  // Set once useVoice exists below; read from handleVoiceCommand, which is
+  // itself passed into useVoice, so it cannot close over `voice` directly.
+  const voiceRef = useRef<ReturnType<typeof useVoice> | null>(null);
 
   const handleVoiceCommand = useCallback(
     (query: string) => {
+      if (chat.pendingConfirmations.length > 0) {
+        const intent = parseConfirmationIntent(query);
+        if (intent === "yes") {
+          awaitingVoiceReplyRef.current = true;
+          void chat.sendMessage(
+            "",
+            chat.pendingConfirmations.map((p) => p.action_id)
+          );
+          return;
+        }
+        if (intent === "no") {
+          chat.denyAction();
+          if (voiceRef.current?.isActive) void voiceRef.current.speak("Understood, cancelled.");
+          return;
+        }
+        if (voiceRef.current?.isActive) void voiceRef.current.speak("Sorry, was that a yes or a no?");
+        return;
+      }
+
       awaitingVoiceReplyRef.current = true;
       void chat.sendMessage(query, undefined, undefined, activeProjectId, chatMode);
     },
@@ -63,17 +86,18 @@ export default function Home() {
     sessionId: chat.activeSessionId,
     onCommand: handleVoiceCommand,
   });
+  voiceRef.current = voice;
 
   useEffect(() => {
     if (chat.isLoading || !awaitingVoiceReplyRef.current) return;
 
     const lastReply = [...chat.messages]
       .reverse()
-      .find((m) => m.role === "assistant" && m.content.trim());
+      .find((m) => m.role === "assistant" && (m.spoken || m.content.trim()));
     if (!lastReply) return;
 
     awaitingVoiceReplyRef.current = false;
-    void voice.speak(lastReply.content);
+    void voice.speak(lastReply.spoken || lastReply.content);
   }, [chat.isLoading, chat.messages, voice]);
 
   // Ambient observations. Spoken only while hands-free voice is on, so the

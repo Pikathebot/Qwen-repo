@@ -5,6 +5,7 @@ import {
   GovernorTelemetry,
   HealthResponse,
   MemoryItem,
+  PendingConfirmation,
   PersonaOverrides,
   PersonaStatus,
   AwarenessMonitorStatus,
@@ -854,7 +855,15 @@ export async function sendChatApi(data: {
   session_id: string;
   project_id?: string;
   chat_mode?: "WORKSPACE" | "SYSTEM";
-}): Promise<{ response: string; model: string; status: string; session_id: string }> {
+  approved_action_ids?: string[];
+}): Promise<{
+  response: string;
+  model: string;
+  status: string;
+  session_id: string;
+  pending_confirmations: PendingConfirmation[];
+  spoken?: string;
+}> {
   const res = await fetch(`${API_BASE_URL}/chat`, {
     method: "POST",
     headers: {

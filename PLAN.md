@@ -97,6 +97,8 @@ Everything above makes Jarvis *capable*. This layer is what makes it behave like
 
 - [x] **Proactive tool use** (`AwarenessMonitor.actions`, `backend/app/main.py`) — A kind of observation can carry a registered action: when it first escalates to CRITICAL, the monitor awaits the action, then emits a follow-up observation announcing what it did. Ships with one wired case — VRAM critical now evicts the model itself (`auto_unload_models()`) rather than only warning that eviction is imminent, which fires independently of and earlier than the governor's own reactive throttle (which additionally needs high GPU compute or ≥99% raw VRAM). An action fires once per escalation, never every poll, and re-arms after recovery. Toggle: Settings → "Proactive actions" (`PATCH /api/awareness/config {actions_enabled}`), default on (`PROACTIVE_ACTIONS_ENABLED`).
 
+- [x] **Voice-driven confirmations** (`build_confirmation_prompt` in `backend/app/agent/permissions.py`, `desktop-app/src/lib/voice-intent.ts`) — A `CONFIRMATION_REQUIRED` tool call now carries a TTS-ready `spoken` prompt ("I need your approval to run a command: git push origin main. Say yes to proceed, or no to cancel, sir.") alongside the existing approve/deny card, on both `/chat` and `/chat/stream`. The main window speaks it when the turn was voice-initiated (`page.tsx`); the HUD speaks it always, since every HUD turn is voice. A spoken "yes"/"no" (`parseConfirmationIntent`) is intercepted before it reaches the model — "yes" resubmits the original prompt with all pending action ids approved, "no" cancels, anything else re-asks rather than being treated as a new command.
+
 ### Key endpoints
 
 | Area | Endpoints |
@@ -110,5 +112,5 @@ Everything above makes Jarvis *capable*. This layer is what makes it behave like
 
 ## 4. Next Milestones
 
-- **Voice-driven confirmations**: speak the pending-confirmation prompt and accept a spoken approval for `CONFIRMATION_REQUIRED` tools.
 - **More proactive actions**: extend `AwarenessMonitor.actions` beyond VRAM eviction — e.g. nudge or close a heavy external app after a sustained `heavy_external_app` observation, or flag largest files/artifacts when `disk_space` goes critical.
+- **Confirmation timeout voice feedback**: `CONFIRMATION_TIMEOUT_ACTION` in `permissions.py` silently denies an unanswered action; a hands-free session that never gets a yes/no should hear that it timed out rather than just going quiet.

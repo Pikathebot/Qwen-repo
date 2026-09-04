@@ -437,3 +437,61 @@ def test_patch_file_respects_chat_mode():
     assert dec_sys.risk_tier == RiskTier.LOW_RISK
 
 
+# --- Voice-driven confirmation prompts ---
+
+
+def test_confirmation_prompt_is_empty_for_no_pending_actions():
+    from app.agent.permissions import build_confirmation_prompt
+    from app.persona.profiles import JARVIS
+
+    assert build_confirmation_prompt([], JARVIS) == {"text": "", "spoken": ""}
+
+
+def test_confirmation_prompt_describes_a_single_action_and_asks_yes_no():
+    from app.agent.permissions import build_confirmation_prompt
+    from app.persona.profiles import JARVIS
+
+    pending = [{
+        "action_id": "act_1",
+        "tool": "execute_command",
+        "args": {"command": "git push origin main"},
+        "risk_tier": "CONFIRMATION_REQUIRED",
+        "reason": "requires confirmation",
+    }]
+    prompt = build_confirmation_prompt(pending, JARVIS)
+
+    assert "git push origin main" in prompt["spoken"]
+    assert "yes to proceed" in prompt["spoken"]
+    assert "no to cancel" in prompt["spoken"]
+    assert prompt["spoken"].endswith(", sir.")
+    assert "**Confirmation required**" in prompt["text"]
+
+
+def test_confirmation_prompt_summarizes_multiple_actions():
+    from app.agent.permissions import build_confirmation_prompt
+    from app.persona.profiles import ASSISTANT
+
+    pending = [
+        {"action_id": "act_1", "tool": "execute_command", "args": {"command": "npm install"}, "risk_tier": "CONFIRMATION_REQUIRED"},
+        {"action_id": "act_2", "tool": "kill_process", "args": {"process_name": "notepad.exe"}, "risk_tier": "CONFIRMATION_REQUIRED"},
+    ]
+    prompt = build_confirmation_prompt(pending, ASSISTANT)
+
+    assert "2 actions" in prompt["spoken"]
+    assert "npm install" in prompt["spoken"]
+    assert "notepad.exe" in prompt["spoken"]
+    # ASSISTANT has no address term, so no persona-specific sign-off.
+    assert not prompt["spoken"].endswith(", sir.")
+    assert prompt["text"].count("- ") == 2
+
+
+def test_confirmation_prompt_falls_back_to_tool_name_without_recognizable_args():
+    from app.agent.permissions import build_confirmation_prompt
+    from app.persona.profiles import JARVIS
+
+    pending = [{"action_id": "act_1", "tool": "get_clipboard", "args": {}, "risk_tier": "CONFIRMATION_REQUIRED"}]
+    prompt = build_confirmation_prompt(pending, JARVIS)
+
+    assert "get clipboard" in prompt["spoken"]
+
+

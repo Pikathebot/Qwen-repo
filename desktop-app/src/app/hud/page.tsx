@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useAwareness } from "@/hooks/useAwareness";
 import { useVoice } from "@/hooks/useVoice";
 import { sendChatApi } from "@/lib/api";
-import { VoiceState } from "@/lib/types";
+import { PendingConfirmation, VoiceState } from "@/lib/types";
+import { parseConfirmationIntent } from "@/lib/voice-intent";
 
 /**
  * The always-on-top HUD.
@@ -80,6 +81,10 @@ function Ring({
 
 export default function Hud() {
   const [lastReply, setLastReply] = useState("");
+  const [pendingConfirmations, setPendingConfirmations] = useState<PendingConfirmation[]>([]);
+  // The backend re-derives the pending tool calls from the original prompt,
+  // so approving them resends it (with approved_action_ids) rather than "".
+  const lastQueryRef = useRef("");
 
   // The shared layout paints an opaque background; the HUD window is
   // transparent, so its rounded card is the only thing that should show.
@@ -91,24 +96,56 @@ export default function Hud() {
     };
   }, []);
 
-  const handleCommand = useCallback(
-    async (query: string) => {
+  // Submits a turn (a fresh command, or a re-submit with approved action
+  // ids) and updates the reply/confirmation state from the result.
+  const submitTurn = useCallback(
+    async (message: string, approvedActionIds?: string[]) => {
       try {
         const result = await sendChatApi({
-          message: query,
+          message: message || lastQueryRef.current,
           session_id: HUD_SESSION_ID,
           chat_mode: "WORKSPACE",
+          approved_action_ids: approvedActionIds,
         });
-        setLastReply(result.response);
-        void voice.speak(result.response);
+        setLastReply(result.spoken || result.response);
+        setPendingConfirmations(result.pending_confirmations || []);
+        void voice.speak(result.spoken || result.response);
       } catch (e) {
         const message = e instanceof Error ? e.message : "Request failed";
         setLastReply(message);
       }
     },
-    // `voice` is created below; the callback only runs after mount.
+    // `voice` is created below; this only runs after mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     []
+  );
+
+  const handleCommand = useCallback(
+    async (query: string) => {
+      if (pendingConfirmations.length > 0) {
+        const intent = parseConfirmationIntent(query);
+        if (intent === "yes") {
+          const actionIds = pendingConfirmations.map((p) => p.action_id);
+          setPendingConfirmations([]);
+          await submitTurn("", actionIds);
+          return;
+        }
+        if (intent === "no") {
+          setPendingConfirmations([]);
+          setLastReply("Cancelled.");
+          void voice.speak("Understood, cancelled.");
+          return;
+        }
+        void voice.speak("Sorry, was that a yes or a no?");
+        return;
+      }
+
+      lastQueryRef.current = query;
+      await submitTurn(query);
+    },
+    // `voice` is created below; this only runs after mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pendingConfirmations, submitTurn]
   );
 
   const voice = useVoice({

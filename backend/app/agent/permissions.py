@@ -341,6 +341,44 @@ class PermissionDecision:
     reason: str
 
 
+def _describe_pending_action(pending: dict[str, Any]) -> str:
+    """A short, speakable description of one pending action, e.g. 'run a command: git push'."""
+    tool = str(pending.get("tool", "")).replace("_", " ").strip() or "an action"
+    args = pending.get("args") or {}
+    for key in ("command", "cmd", "file_path", "path", "url", "pid_or_name", "process_name", "name"):
+        value = args.get(key) if isinstance(args, dict) else None
+        if value:
+            return f"{tool}: {value}"
+    return tool
+
+
+def build_confirmation_prompt(pending: list[dict[str, Any]], persona: Any) -> dict[str, str]:
+    """
+    Compose the confirmation prompt as both chat text and a TTS-ready sentence,
+    so a pending CONFIRMATION_REQUIRED tool call can be spoken and answered by
+    voice instead of only shown as a card the user has to click.
+    """
+    from app.awareness.briefing import address_suffix
+
+    if not pending:
+        return {"text": "", "spoken": ""}
+
+    address = address_suffix(persona)
+    descriptions = [_describe_pending_action(p) for p in pending]
+
+    if len(descriptions) == 1:
+        ask = f"I need your approval to {descriptions[0]}."
+        lines = [f"**Confirmation required** — {descriptions[0]} ({pending[0].get('risk_tier', 'CONFIRMATION_REQUIRED')})"]
+    else:
+        ask = f"I need your approval for {len(descriptions)} actions: " + "; ".join(descriptions) + "."
+        lines = ["**Confirmation required**"] + [
+            f"- {d} ({p.get('risk_tier', 'CONFIRMATION_REQUIRED')})" for d, p in zip(descriptions, pending)
+        ]
+
+    spoken = f"{ask} Say yes to proceed, or no to cancel{address}."
+    return {"text": "\n".join(lines), "spoken": spoken}
+
+
 @dataclass
 class BatchPermissionResult:
     all_allowed: bool

@@ -439,6 +439,7 @@ class ChatResponse(BaseModel):
     active_skills: list[str] = Field(default_factory=list, description="List of dynamically matched skill names")
     tools_used: list[dict[str, Any]] = Field(default_factory=list)
     pending_confirmations: list[dict[str, Any]] = Field(default_factory=list)
+    spoken: Optional[str] = Field(default=None, description="TTS-ready confirmation prompt, if any")
 
 
 class SpeakRequest(BaseModel):
@@ -923,7 +924,8 @@ async def chat(request: ChatRequest):
             compaction_performed=result.compaction_performed,
             active_skills=result.active_skills,
             tools_used=result.tools_used,
-            pending_confirmations=result.pending_confirmations
+            pending_confirmations=result.pending_confirmations,
+            spoken=result.spoken,
         )
 
     except Exception as e:

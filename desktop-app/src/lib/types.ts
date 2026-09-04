@@ -29,6 +29,8 @@ export interface Message {
   toolsUsed?: Array<Record<string, unknown>>;
   activeSkills?: string[];
   pendingConfirmations?: PendingConfirmation[];
+  /** TTS-ready text for this message, when it differs from the displayed content (e.g. a confirmation prompt). */
+  spoken?: string;
 }
 
 export interface Project {
@@ -187,6 +189,8 @@ export interface SSEToolEndEvent {
 export interface SSEConfirmationRequiredEvent {
   pending_confirmations: PendingConfirmation[];
   session_id: string;
+  response?: string;
+  spoken?: string;
 }
 
 export interface SSEDoneEvent {

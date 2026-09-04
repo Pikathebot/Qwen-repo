@@ -18,6 +18,7 @@ from app.agent.permissions import (
     PermissionDecision,
     RiskTier,
     ChatMode,
+    build_confirmation_prompt,
 )
 from app.agent.validator import validate_tool_call, CallHistory, ValidationResult
 from app.agent.model_router import ModelRouter, RoutingDecision
@@ -48,6 +49,7 @@ class OrchestratorResult:
     active_skills: list[str] = field(default_factory=list)
     tools_used: list[dict[str, Any]] = field(default_factory=list)
     pending_confirmations: list[dict[str, Any]] = field(default_factory=list)
+    spoken: Optional[str] = None
 
 
 def extract_tool_calls_from_text(content: str, user_prompt: str = "") -> tuple[str, list[dict[str, Any]]]:
@@ -1096,11 +1098,10 @@ class AgentOrchestrator:
                     "Tool execution blocked by safety permission gate. %d action(s) require confirmation. Details: %s",
                     len(pending_list), pending_list
                 )
-                actions_summary = ", ".join([f"'{p['tool']}' (Risk: {p['risk_tier']})" for p in pending_list])
-                confirm_response = f"Confirmation Required: The action requires user approval before executing: {actions_summary}."
+                prompt = build_confirmation_prompt(pending_list, persona_manager.get_active())
 
                 return OrchestratorResult(
-                    response=confirm_response,
+                    response=prompt["text"],
                     model=model,
                     provider=provider.name,
                     status="confirmation_required",
@@ -1108,7 +1109,8 @@ class AgentOrchestrator:
                     route_reason=route_reason,
                     fallback_used=False,
                     tools_used=tools_used,
-                    pending_confirmations=pending_list
+                    pending_confirmations=pending_list,
+                    spoken=prompt["spoken"],
                 )
 
             # All tools approved -> append assistant message
@@ -1471,6 +1473,7 @@ class AgentOrchestrator:
                     }
                     for p in batch_result.pending_confirmations
                 ]
+                prompt = build_confirmation_prompt(pending_list, persona_manager.get_active())
                 yield {
                     "event": "confirmation_required",
                     "data": {
@@ -1478,7 +1481,9 @@ class AgentOrchestrator:
                         "pending_confirmations": pending_list,
                         "session_id": session_id,
                         "model": model,
-                        "provider": provider.name
+                        "provider": provider.name,
+                        "response": prompt["text"],
+                        "spoken": prompt["spoken"],
                     }
                 }
                 return

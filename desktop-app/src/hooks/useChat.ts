@@ -243,12 +243,17 @@ export function useChat(onSessionsUpdated?: () => void): UseChatReturn {
                 })
               );
             },
-            onConfirmationRequired: ({ pending_confirmations, session_id }) => {
+            onConfirmationRequired: ({ pending_confirmations, session_id, response, spoken }) => {
               setPendingConfirmations(pending_confirmations);
               setMessages((prev) =>
                 prev.map((msg) =>
                   msg.id === assistantMessageId
-                    ? { ...msg, pendingConfirmations: pending_confirmations }
+                    ? {
+                        ...msg,
+                        content: response || msg.content,
+                        pendingConfirmations: pending_confirmations,
+                        spoken,
+                      }
                     : msg
                 )
               );
