@@ -38,6 +38,7 @@ test_sandbox*/
 
 # App Data & Webview Cache
 /data/
+backend/data/
 
 # Node & Next.js & Tauri Build Output
 node_modules/
