@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -203,3 +204,70 @@ def test_clear_endpoint_drops_the_override(client, catalog):
 
 def test_clear_endpoint_rejects_an_unknown_slot(client):
     assert client.delete("/api/models/select/turbo").status_code == 400
+
+
+# --- regressions: a stale model identifier must not reach llama-server ------
+
+
+def test_legacy_bonsai_runtime_resolves_to_a_local_slot():
+    """
+    ACTIVE_MODEL_BACKEND defaulted to "bonsai", a name left over from the LM Studio era.
+    provider_factory maps that runtime to LlamaCppProvider, but the router kept returning the LM
+    Studio *model id* alongside it, so llama-server was asked to open "prism-ml/bonsai-27b" as a
+    file and exited. Runtime and model mapping have to agree.
+    """
+    from app.agent.model_router import ModelRouter
+
+    router = ModelRouter()
+    router.active_runtime = "bonsai"
+
+    provider, model, _ = router._resolve_local_target()
+    assert provider == "llama_cpp"
+    assert model == "main"
+
+    provider, model, _ = router._resolve_local_target(prefer_fast=True)
+    assert provider == "llama_cpp"
+    assert model == "fast"
+
+
+def test_unresolvable_model_kind_falls_back_to_main():
+    """An identifier that is not a slot name and not a real path must not become a spawn arg."""
+    from app.agent.runtime_process_manager import RuntimeProcessManager
+
+    manager = RuntimeProcessManager()
+    resolved, alias = manager.resolve_model_path("prism-ml/bonsai-27b")
+
+    assert alias == "main"
+    assert "bonsai" not in str(resolved)
+
+
+@pytest.mark.asyncio
+async def test_switch_to_a_missing_model_keeps_the_running_one(monkeypatch):
+    """A bad switch request must not tear down a healthy server."""
+    from app.agent.runtime_process_manager import RuntimeProcessManager
+
+    manager = RuntimeProcessManager()
+    manager._current_model_kind = "main"
+
+    async def _healthy(timeout=3.0):
+        return True
+
+    stopped = False
+
+    async def _stop(sweep_all=False):
+        nonlocal stopped
+        stopped = True
+        return True
+
+    monkeypatch.setattr(manager, "health_check", _healthy)
+    monkeypatch.setattr(manager, "_stop_internal", _stop)
+    monkeypatch.setattr(
+        manager, "resolve_model_path",
+        lambda kind: (Path(r"D:\nonexistent\ghost.gguf"), "ghost"),
+    )
+
+    with pytest.raises(RuntimeError, match="Refusing to switch"):
+        await manager.ensure_running("ghost")
+
+    assert stopped is False
+    assert manager._current_model_kind == "main"

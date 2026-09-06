@@ -110,6 +110,19 @@ class RuntimeProcessManager:
             if models_dir.exists():
                 for cand in models_dir.glob("*9B*.gguf"):
                     return cand.resolve(), alias
+        elif not resolved.exists() and alias not in ("main", "fast"):
+            # An arbitrary model_kind is treated as a path, which is right for a real file and
+            # badly wrong for anything else: a stale model *identifier* from another runtime
+            # (e.g. "prism-ml/bonsai-27b") became D:/JARVIS/prism-ml/bonsai-27b and llama-server
+            # died trying to open it. Nothing downstream can do anything useful with a path that
+            # cannot exist, so fall back to the main slot and say so.
+            logger.warning(
+                "Model kind '%s' does not resolve to an existing file (%s); falling back to the "
+                "main model. This usually means a caller passed a model identifier from a "
+                "different runtime rather than a path or a slot name.",
+                model_kind, resolved,
+            )
+            return self.resolve_model_path("main")
         return resolved, alias
 
     async def health_check(self, timeout: float = 3.0) -> bool:
@@ -182,7 +195,16 @@ class RuntimeProcessManager:
                     return True
 
 
-                # Different model kind requested -> trigger switch
+                # Different model kind requested -> trigger switch. Check the target is loadable
+                # BEFORE stopping what is already serving: otherwise one bad request replaces a
+                # working model with nothing, which is exactly how a stale model identifier took
+                # down a healthy server mid-conversation.
+                if not resolved_model.exists():
+                    raise RuntimeError(
+                        f"Refusing to switch to '{model_kind}': no model file at {resolved_model}. "
+                        f"Keeping the currently loaded '{self._current_model_kind}'."
+                    )
+
                 logger.info(
                     "Switching running llama-server model from '%s' to '%s' (alias: %s)",
                     self._current_model_kind,

@@ -234,11 +234,15 @@ def test_immediate_next_inference_routes_to_hermes3_without_restart(temp_memory_
     monkeypatch.setattr(settings, "active_model_backend", "bonsai")
     router = ModelRouter(default_mode="auto")
 
-    # Before rollback: routes to LM Studio Bonsai
+    # Before rollback: routes locally. "bonsai" is a legacy runtime name from the LM Studio era;
+    # provider_factory has mapped it to LlamaCppProvider for a long time, and the router now
+    # agrees instead of pairing that runtime with an LM Studio model id -- which used to reach
+    # llama-server as a file path and kill it. What matters to this test is only that the request
+    # routes locally here and to Ollama after the rollback below.
     d1 = router.evaluate("What is 2+2?")
     assert d1.mode == "normal"
-    assert d1.provider == "lmstudio"
-    assert d1.model == "prism-ml/bonsai-27b"
+    assert d1.provider == "llama_cpp"
+    assert d1.model in ("main", "fast")
 
     # Trigger rollback
     monitor = ReliabilityMonitor(memory_store=temp_memory_store, window_size=30, floor=0.75)

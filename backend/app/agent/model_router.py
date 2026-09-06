@@ -125,9 +125,14 @@ class ModelRouter:
         runtime = self.active_runtime
 
         if runtime in ("bonsai", "lmstudio"):
-            provider = "lmstudio"
-            model = requested_model or getattr(settings, "lmstudio_model", "prism-ml/bonsai-27b")
-            return provider, model, f"LM Studio ({model})"
+            # Legacy runtime names from the LM Studio era. provider_factory already maps both to
+            # LlamaCppProvider, but this branch used to keep returning an LM Studio *model id*
+            # ("prism-ml/bonsai-27b"), which then reached llama-server as though it were a file
+            # path -- so llama.cpp went looking for D:\JARVIS\prism-mlonsai-27b and exited.
+            # The runtime mapping and the model mapping have to agree; resolve to the local slots.
+            provider = "llama_cpp"
+            model = "fast" if prefer_fast else "main"
+            return provider, model, f"llama.cpp ({model}, via legacy '{runtime}' runtime name)"
 
         elif runtime == "llama_cpp":
             provider = "llama_cpp"

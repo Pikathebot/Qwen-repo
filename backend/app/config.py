@@ -151,7 +151,11 @@ class Settings(BaseSettings):
     # Terminal Sandbox Settings (Phase 4)
     terminal_timeout_seconds: int = Field(default=30, alias="TERMINAL_TIMEOUT_SECONDS")
 
-    active_model_backend: str = Field(default="bonsai", alias="ACTIVE_MODEL_BACKEND")
+    # Legacy runtime selector, kept for the reliability monitor's rollback logic. It used to
+    # default to "bonsai" (an LM Studio-hosted model) from before llama.cpp became the primary
+    # runtime -- and since nothing sets it in .env, that stale default silently overrode
+    # model_runtime and routed every chat at a model that has not existed for a long time.
+    active_model_backend: str = Field(default="llama_cpp", alias="ACTIVE_MODEL_BACKEND")
 
     lmstudio_base_url: str = Field(default="http://localhost:1234/v1", alias="LMSTUDIO_BASE_URL")
 
