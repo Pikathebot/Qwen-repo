@@ -14,9 +14,12 @@ __pycache__/
 *.dylib
 
 # AI Models & Tools Binaries
-models/
+# Anchored with a leading slash: unanchored, these match a directory of that name at ANY
+# depth, and "models/" was quietly excluding desktop-winui/Jarvis.Core/Models/ -- the client's
+# whole DTO layer -- from every commit.
+/models/
 *.gguf
-tools/
+/tools/
 
 # Environment variables
 .env
@@ -34,27 +37,27 @@ htmlcov/
 test_sandbox*/
 
 # App Data & Webview Cache
-data/
+/data/
 
 # Node & Next.js & Tauri Build Output
 node_modules/
 .next/
-out/
-target/
+/out/
+/target/
 desktop-app/node_modules/
 desktop-app/.next/
 desktop-app/out/
 desktop-app/src-tauri/target/
 
 # Build & packaging
-build/
-dist/
+/build/
+/dist/
 *.spec
 *.zip
 
 # Nested / duplicate snapshots
-jarvis_project/
-workspace/
+/jarvis_project/
+/workspace/
 backend/workspace/
 *.tsbuildinfo
 
@@ -64,9 +67,9 @@ Thumbs.db
 
 
 # Runtime artifacts
-graphify-out/
-projects/
+/graphify-out/
+/projects/
 backend/projects/
-MagicMock/
+/MagicMock/
 backend/files/
-files/
+/files/

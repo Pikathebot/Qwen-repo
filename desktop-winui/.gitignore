@@ -1,0 +1,18 @@
+# .NET build output
+[Bb]in/
+[Oo]bj/
+*.user
+
+# Local publish/package output
+AppPackages/
+BundleArtifacts/
+*.appx
+*.appxbundle
+*.msix
+*.msixbundle
+*.cer
+*.pfx
+
+# Launch logs written next to the solution during development
+run*.log
+jarvis-app-crash.log

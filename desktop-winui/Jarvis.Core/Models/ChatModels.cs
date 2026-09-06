@@ -1,0 +1,124 @@
+using System.Text.Json.Serialization;
+using CommunityToolkit.Mvvm.ComponentModel;
+
+namespace Jarvis.Core.Models;
+
+public enum MessageRole
+{
+    User,
+    Assistant,
+    System,
+    Tool,
+}
+
+public enum ToolStatus
+{
+    Running,
+    Success,
+    Error,
+}
+
+public sealed class ToolStep
+{
+    public string Id { get; set; } = "";
+    public string Tool { get; set; } = "";
+    public Dictionary<string, object?> Args { get; set; } = new();
+    public ToolStatus Status { get; set; }
+    public object? Result { get; set; }
+
+    /// <summary>Raw, not-yet-valid-JSON argument text streamed via tool_draft.</summary>
+    public string? RawArgs { get; set; }
+}
+
+public sealed class PendingConfirmation
+{
+    [JsonPropertyName("action_id")]
+    public string ActionId { get; set; } = "";
+
+    public string Tool { get; set; } = "";
+
+    /// <summary>Backend sends either an object or a pre-formatted string.</summary>
+    [JsonPropertyName("args")]
+    public System.Text.Json.JsonElement ArgsRaw { get; set; }
+
+    [JsonPropertyName("risk_tier")]
+    public string? RiskTier { get; set; }
+
+    public string? Reason { get; set; }
+}
+
+/// <summary>A single turn in the chat transcript. Client-side model, not sent to the backend as-is.
+/// ObservableObject (not a plain class) because Content mutates token-by-token while streaming and
+/// the message list binds to it with x:Bind Mode=OneWay — without change notification the visible
+/// text never updates as tokens arrive.</summary>
+public partial class ChatMessage : ObservableObject
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("n");
+    public MessageRole Role { get; set; }
+
+    [ObservableProperty]
+    public partial string Content { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.Now;
+    public List<ToolStep> ToolSteps { get; set; } = new();
+    public string? Model { get; set; }
+    public string? Provider { get; set; }
+    public List<Dictionary<string, object?>> ToolsUsed { get; set; } = new();
+    public List<string> ActiveSkills { get; set; } = new();
+    public List<PendingConfirmation> PendingConfirmations { get; set; } = new();
+
+    /// <summary>TTS-ready text for this message, when it differs from the displayed content.</summary>
+    public string? Spoken { get; set; }
+
+    [ObservableProperty]
+    public partial bool IsStreaming { get; set; }
+
+    public ChatMessage()
+    {
+        Content = "";
+    }
+}
+
+public sealed class ChatRequest
+{
+    public string Message { get; set; } = "";
+
+    [JsonPropertyName("session_id")]
+    public string SessionId { get; set; } = "";
+
+    public string? Model { get; set; }
+
+    /// <summary>"auto" | "normal" | "heavy"</summary>
+    public string Mode { get; set; } = "auto";
+
+    [JsonPropertyName("system_prompt")]
+    public string? SystemPrompt { get; set; }
+
+    [JsonPropertyName("approved_action_ids")]
+    public List<string>? ApprovedActionIds { get; set; }
+
+    /// <summary>"WORKSPACE" | "SYSTEM"</summary>
+    [JsonPropertyName("chat_mode")]
+    public string? ChatMode { get; set; }
+
+    [JsonPropertyName("project_id")]
+    public string? ProjectId { get; set; }
+
+    public List<Dictionary<string, object?>>? Attachments { get; set; }
+}
+
+public sealed class ChatResponse
+{
+    public string Response { get; set; } = "";
+    public string Model { get; set; } = "";
+    public string Provider { get; set; } = "";
+    public string Status { get; set; } = "";
+
+    [JsonPropertyName("session_id")]
+    public string SessionId { get; set; } = "";
+
+    [JsonPropertyName("pending_confirmations")]
+    public List<PendingConfirmation>? PendingConfirmations { get; set; }
+
+    public string? Spoken { get; set; }
+}

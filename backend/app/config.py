@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     llama_port: int = Field(default=8001, alias="LLAMA_PORT")
     llama_startup_timeout_seconds: float = Field(default=90.0, alias="LLAMA_STARTUP_TIMEOUT")
     llama_extra_args: list[str] = Field(default_factory=list, alias="LLAMA_EXTRA_ARGS")
+    # Passed through to the llama-server child's environment, not onto its command line: the
+    # chat-template kwargs (e.g. Qwen3.5's {"enable_thinking":true}) are only read from the
+    # environment by llama-server, so a .env entry alone would never reach it -- pydantic-settings
+    # reads .env into Settings, it does not export anything into os.environ.
+    llama_chat_template_kwargs: Optional[str] = Field(default=None, alias="LLAMA_CHAT_TEMPLATE_KWARGS")
 
     # Execution Flags (Amendment 1)
     llama_n_gpu_layers: int = Field(default=99, alias="LLAMA_N_GPU_LAYERS")

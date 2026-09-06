@@ -191,13 +191,20 @@ class RuntimeProcessManager:
                 cmd.extend(self.extra_args)
 
 
+            # llama-server reads chat-template kwargs from its environment rather than argv, so
+            # this is the only way to hand it e.g. Qwen3.5's {"enable_thinking": true}.
+            child_env = os.environ.copy()
+            if settings.llama_chat_template_kwargs:
+                child_env["LLAMA_CHAT_TEMPLATE_KWARGS"] = settings.llama_chat_template_kwargs
+
             logger.info("Spawning llama-server process: %s", " ".join(cmd))
             try:
                 proc = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    bufsize=0
+                    bufsize=0,
+                    env=child_env
                 )
             except Exception as e:
                 logger.error("Failed to spawn llama-server binary at '%s': %s", resolved_exe, e)
