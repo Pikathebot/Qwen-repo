@@ -1,0 +1,239 @@
+"""
+Discovery and selection of the local GGUF models Jarvis can run.
+
+Before this existed the two model slots were fixed by ``LLAMA_MAIN_MODEL_PATH`` /
+``LLAMA_FAST_MODEL_PATH`` in ``.env`` and could not be changed without editing that file and
+restarting the backend -- there was no endpoint, and ``/reliability/switch-backend`` is a
+different, unrelated mechanism (it toggles reliability-monitor backends, not GGUFs). This module
+adds the missing piece: it enumerates what is actually on disk, remembers a per-slot choice in
+``data/models.json``, and is consulted by ``RuntimeProcessManager`` ahead of the settings values,
+so a selection survives restarts without anyone editing configuration by hand.
+
+Two discovery rules worth stating, because they encode a preference rather than a fact:
+
+* **Files sitting directly in ``models/`` are recommended; files nested in a subdirectory are
+  not.** The top level is where deliberately-installed models live. Subdirectories tend to be
+  vendor download trees (``models/unsloth/...``) holding duplicates, variants and companion files,
+  which are perfectly usable but are not what someone means by "my models".
+* **``mmproj-*.gguf`` files are projectors, not chat models.** They are multimodal vision adapters
+  that accompany a model and are loaded with ``--mmproj``; offering one as something to chat with
+  would simply fail. They are reported separately so the vision wiring can find them later.
+"""
+
+import json
+import logging
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from typing import Optional
+
+logger = logging.getLogger("jarvis.agent.model_catalog")
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+DEFAULT_MODELS_DIR = REPO_ROOT / "models"
+DEFAULT_STATE_PATH = REPO_ROOT / "data" / "models.json"
+
+SLOTS = ("main", "fast")
+
+# Substrings that identify a file as a multimodal projector rather than a chat model.
+PROJECTOR_PREFIXES = ("mmproj",)
+
+
+@dataclass
+class ModelInfo:
+    """One GGUF on disk, described the way a picker needs it."""
+
+    id: str
+    """Repo-relative POSIX path, e.g. ``models/Qwen3.5-9B-UD-Q3_K_XL.gguf``. Stable across
+    machines and directly usable as ``LLAMA_MAIN_MODEL_PATH``."""
+
+    name: str
+    """File stem, for display."""
+
+    size_bytes: int
+    recommended: bool
+    """True when the file sits directly in ``models/`` rather than in a subdirectory."""
+
+    family: Optional[str]
+    """Parameter-count hint parsed from the filename ("9B", "4B", ...), used to suggest which
+    slot a model suits. None when the name says nothing about size."""
+
+    directory: str
+    """Repo-relative POSIX path of the containing directory, so a picker can group by source."""
+
+    slots: list[str]
+    """Which slots currently point at this file ("main", "fast", or both)."""
+
+
+def _is_projector(path: Path) -> bool:
+    lowered = path.name.lower()
+    return any(lowered.startswith(prefix) for prefix in PROJECTOR_PREFIXES)
+
+
+def _family_of(name: str) -> Optional[str]:
+    """Parses a parameter-count token like '9B' or '4B' out of a filename."""
+    for token in name.replace("_", "-").replace(".", "-").split("-"):
+        stripped = token.strip().upper()
+        if len(stripped) >= 2 and stripped.endswith("B") and stripped[:-1].isdigit():
+            return stripped
+    return None
+
+
+class ModelCatalog:
+    """
+    Enumerates ``models/`` and remembers which file each slot should use.
+
+    The selection is stored separately from ``.env`` deliberately: ``.env`` is hand-edited
+    configuration under the user's control, and a UI that rewrote it would fight them for it.
+    ``data/models.json`` holds only what the UI chose, and an absent entry means "fall back to
+    whatever ``.env`` says", so deleting the file restores configured behaviour exactly.
+    """
+
+    def __init__(
+        self,
+        models_dir: Optional[Path] = None,
+        state_path: Optional[Path] = None,
+    ):
+        self.models_dir = Path(models_dir) if models_dir else DEFAULT_MODELS_DIR
+        self.state_path = Path(state_path) if state_path else DEFAULT_STATE_PATH
+        self._selection: dict[str, str] = {}
+        self._load_state()
+
+    # --- persistence -----------------------------------------------------
+
+    def _load_state(self) -> None:
+        try:
+            if self.state_path.exists():
+                data = json.loads(self.state_path.read_text(encoding="utf-8"))
+                selection = data.get("selection", {})
+                self._selection = {
+                    slot: str(value)
+                    for slot, value in selection.items()
+                    if slot in SLOTS and value
+                }
+        except Exception as exc:
+            logger.warning("Could not read model selection from %s: %s", self.state_path, exc)
+            self._selection = {}
+
+    def _save_state(self) -> None:
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            self.state_path.write_text(
+                json.dumps({"selection": self._selection}, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning("Could not persist model selection to %s: %s", self.state_path, exc)
+
+    # --- discovery -------------------------------------------------------
+
+    def discover(self) -> list[ModelInfo]:
+        """
+        All selectable chat models, recommended (top-level) ones first, then alphabetical.
+
+        Ordering is part of the contract: a client can present this list as-is and the first
+        entries will be the ones worth recommending.
+        """
+        models: list[ModelInfo] = []
+        if not self.models_dir.exists():
+            return models
+
+        for path in sorted(self.models_dir.rglob("*.gguf")):
+            if _is_projector(path):
+                continue
+            models.append(self._describe(path))
+
+        models.sort(key=lambda m: (not m.recommended, m.name.lower()))
+        return models
+
+    def projectors(self) -> list[ModelInfo]:
+        """Multimodal projector files, reported separately from chat models."""
+        if not self.models_dir.exists():
+            return []
+        return [
+            self._describe(path)
+            for path in sorted(self.models_dir.rglob("*.gguf"))
+            if _is_projector(path)
+        ]
+
+    def _describe(self, path: Path) -> ModelInfo:
+        model_id = self._to_id(path)
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        return ModelInfo(
+            id=model_id,
+            name=path.stem,
+            size_bytes=size,
+            recommended=path.parent.resolve() == self.models_dir.resolve(),
+            family=_family_of(path.stem),
+            directory=self._to_id(path.parent),
+            slots=[slot for slot in SLOTS if self._selection.get(slot) == model_id],
+        )
+
+    def _to_id(self, path: Path) -> str:
+        try:
+            return path.resolve().relative_to(REPO_ROOT).as_posix()
+        except ValueError:
+            return path.resolve().as_posix()
+
+    # --- selection -------------------------------------------------------
+
+    def selected(self, slot: str) -> Optional[str]:
+        """The repo-relative path chosen for a slot, or None to defer to settings."""
+        return self._selection.get(slot)
+
+    def selection(self) -> dict[str, Optional[str]]:
+        return {slot: self._selection.get(slot) for slot in SLOTS}
+
+    def resolve_id(self, model_id: str) -> Path:
+        """
+        Turns a catalogue id back into an absolute path, rejecting anything that is not an
+        existing ``.gguf`` inside ``models/``. The containment check is what stops a caller from
+        pointing a slot at an arbitrary file elsewhere on the machine.
+        """
+        candidate = Path(model_id)
+        if not candidate.is_absolute():
+            candidate = REPO_ROOT / candidate
+        candidate = candidate.resolve()
+
+        models_root = self.models_dir.resolve()
+        if not candidate.is_relative_to(models_root):
+            raise ValueError(f"Model must live under {models_root}: {model_id}")
+        if candidate.suffix.lower() != ".gguf" or not candidate.is_file():
+            raise ValueError(f"Not an existing .gguf file: {model_id}")
+        if _is_projector(candidate):
+            raise ValueError(
+                f"{candidate.name} is a multimodal projector, not a chat model; "
+                "it is loaded alongside a model with --mmproj rather than selected as one."
+            )
+        return candidate
+
+    def select(self, slot: str, model_id: str) -> ModelInfo:
+        """Points a slot at a model and persists it. Raises ValueError on an invalid choice."""
+        if slot not in SLOTS:
+            raise ValueError(f"Unknown slot '{slot}'; expected one of {', '.join(SLOTS)}")
+
+        resolved = self.resolve_id(model_id)
+        self._selection[slot] = self._to_id(resolved)
+        self._save_state()
+        return self._describe(resolved)
+
+    def clear(self, slot: str) -> None:
+        """Drops a slot's override so it falls back to the configured .env path."""
+        if self._selection.pop(slot, None) is not None:
+            self._save_state()
+
+
+_catalog: Optional[ModelCatalog] = None
+
+
+def get_model_catalog() -> ModelCatalog:
+    global _catalog
+    if _catalog is None:
+        _catalog = ModelCatalog()
+    return _catalog
+
+
+def to_dict(info: ModelInfo) -> dict:
+    return asdict(info)

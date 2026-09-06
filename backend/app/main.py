@@ -45,6 +45,7 @@ from app.routers import (
     voice_router,
     awareness_router,
     routines_router,
+    models_router,
 )
 from app.awareness.monitor import AwarenessMonitor
 from app.persona import persona_manager
@@ -319,6 +320,7 @@ app.include_router(persona_router)
 app.include_router(voice_router)
 app.include_router(awareness_router)
 app.include_router(routines_router)
+app.include_router(models_router)
 
 
 

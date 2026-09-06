@@ -81,6 +81,20 @@ public sealed class JarvisApiClient
     public Task<UnloadResponse> UnloadModelsAsync(CancellationToken ct = default) =>
         PostAsync<object?, UnloadResponse>("/models/unload", null, ct);
 
+    /// <summary>Every local GGUF, recommended (top-level) ones first — the backend's ordering is
+    /// meaningful, so callers should preserve it rather than re-sorting.</summary>
+    public Task<ModelCatalogResponse> FetchModelCatalogAsync(CancellationToken ct = default) =>
+        GetAsync<ModelCatalogResponse>("/api/models", ct);
+
+    /// <summary>Points a slot ("main" or "fast") at a model. With <paramref name="activate"/>,
+    /// llama-server restarts onto it; the returned Error is non-null when the choice was saved
+    /// but the model would not load.</summary>
+    public Task<ModelSelectResponse> SelectModelAsync(string slot, string modelId, bool activate = true, CancellationToken ct = default) =>
+        PostAsync<ModelSelectRequest, ModelSelectResponse>(
+            "/api/models/select",
+            new ModelSelectRequest { Slot = slot, ModelId = modelId, Activate = activate },
+            ct);
+
     public async Task PauseGovernorAsync(string? reason = null, CancellationToken ct = default)
     {
         var body = new GovernorPauseRequest { Reason = reason ?? "User requested manual pause" };

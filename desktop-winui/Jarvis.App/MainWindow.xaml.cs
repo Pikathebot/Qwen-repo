@@ -26,6 +26,7 @@ public sealed partial class MainWindow : Window
     public PersonaViewModel PersonaViewModel { get; }
     public RoutinesViewModel RoutinesViewModel { get; }
     public VoiceViewModel VoiceViewModel { get; }
+    public ModelsViewModel ModelsViewModel { get; }
 
     private readonly JarvisApiClient _api;
     private readonly GlobalHotkeyService _hotkey;
@@ -53,6 +54,7 @@ public sealed partial class MainWindow : Window
         PersonaViewModel = new PersonaViewModel(api, dispatcher);
         RoutinesViewModel = new RoutinesViewModel(api, dispatcher);
         VoiceViewModel = new VoiceViewModel(api, dispatcher, "jarvis-main");
+        ModelsViewModel = new ModelsViewModel(api, dispatcher);
 
         GlassQuality = new GlassQualityService(AwarenessViewModel, GovernorViewModel);
         // Registered on Loaded: the visual tree has to exist before the panels can be found in it.
@@ -311,7 +313,7 @@ public sealed partial class MainWindow : Window
 
     private async void Settings_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new SettingsDialog(_api, GovernorViewModel, PersonaViewModel, RoutinesViewModel, GlassQuality)
+        var dialog = new SettingsDialog(_api, GovernorViewModel, PersonaViewModel, RoutinesViewModel, ModelsViewModel, GlassQuality)
         {
             XamlRoot = Content.XamlRoot,
         };

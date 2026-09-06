@@ -19,12 +19,14 @@ public sealed partial class SettingsDialog : ContentDialog
 
     public PersonaViewModel PersonaViewModel { get; }
     public RoutinesViewModel RoutinesViewModel { get; }
+    public ModelsViewModel ModelsViewModel { get; }
 
     public SettingsDialog(
         JarvisApiClient api,
         GovernorViewModel governor,
         PersonaViewModel personaViewModel,
         RoutinesViewModel routinesViewModel,
+        ModelsViewModel modelsViewModel,
         GlassQualityService glassQuality)
     {
         _api = api;
@@ -32,6 +34,8 @@ public sealed partial class SettingsDialog : ContentDialog
         _glassQuality = glassQuality;
         PersonaViewModel = personaViewModel;
         RoutinesViewModel = routinesViewModel;
+        ModelsViewModel = modelsViewModel;
+        ModelsViewModel.PropertyChanged += (_, _) => RefreshModelState();
         InitializeComponent();
         Loaded += SettingsDialog_Loaded;
     }
@@ -55,6 +59,11 @@ public sealed partial class SettingsDialog : ContentDialog
 
         await RoutinesViewModel.RefreshAsync();
 
+        await ModelsViewModel.RefreshAsync();
+        ModelList.Loaded += (_, _) => RefreshModelRows();
+        ModelList.ContainerContentChanging += (_, _) => RefreshModelRows();
+        RefreshModelState();
+
         try
         {
             var awareness = await _api.FetchAwarenessStatusAsync();
@@ -74,6 +83,72 @@ public sealed partial class SettingsDialog : ContentDialog
             2 => GlassQualityMode.System,
             _ => GlassQualityMode.Auto,
         });
+    }
+
+    /// <summary>
+    /// Per-row badges and slot buttons. Done here rather than through x:Bind because "is this
+    /// model the one assigned to a slot" is a comparison against view-model state, not a property
+    /// of the row's own item, and a Recommended badge needs a bool-to-Visibility hop that x:Bind
+    /// cannot do without a converter.
+    /// </summary>
+    private void RefreshModelRows()
+    {
+        foreach (var item in ModelList.Items)
+        {
+            if (item is not ModelInfo model) continue;
+            if (ModelList.ContainerFromItem(item) is not ListViewItem { ContentTemplateRoot: FrameworkElement root }) continue;
+
+            if (root.FindName("RecommendedBadge") is FrameworkElement badge)
+            {
+                badge.Visibility = model.Recommended ? Visibility.Visible : Visibility.Collapsed;
+            }
+
+            if (root.FindName("ModelSubtitle") is TextBlock subtitle)
+            {
+                // The containing directory is what distinguishes a top-level model from an
+                // identically-named copy inside a vendor download tree.
+                var family = model.Family is null ? "" : $" · {model.Family}";
+                subtitle.Text = $"{model.SizeDisplay}{family} · {model.Directory}";
+            }
+
+            SetSlotButton(root.FindName("MainButton") as Button, "main", model);
+            SetSlotButton(root.FindName("FastButton") as Button, "fast", model);
+        }
+    }
+
+    private void SetSlotButton(Button? button, string slot, ModelInfo model)
+    {
+        if (button is null) return;
+
+        var assigned = ModelsViewModel.IsSelectedFor(slot, model);
+        button.IsEnabled = !assigned && !ModelsViewModel.IsBusy;
+        button.Opacity = assigned ? 1.0 : 0.75;
+        button.Content = assigned ? (slot == "main" ? "Main ✓" : "Fast ✓") : (slot == "main" ? "Main" : "Fast");
+    }
+
+    private void RefreshModelState()
+    {
+        ModelBusyRing.IsActive = ModelsViewModel.IsBusy;
+        ModelBusyRing.Visibility = ModelsViewModel.IsBusy ? Visibility.Visible : Visibility.Collapsed;
+
+        ModelStatusText.Text = ModelsViewModel.StatusMessage ?? "";
+        ModelStatusText.Visibility = string.IsNullOrEmpty(ModelsViewModel.StatusMessage)
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+
+        RefreshModelRows();
+    }
+
+    private async void SelectMainModel_Click(object sender, RoutedEventArgs e) => await SelectModelAsync(sender, "main");
+
+    private async void SelectFastModel_Click(object sender, RoutedEventArgs e) => await SelectModelAsync(sender, "fast");
+
+    private async Task SelectModelAsync(object sender, string slot)
+    {
+        if (sender is FrameworkElement { Tag: ModelInfo model })
+        {
+            await ModelsViewModel.SelectAsync(slot, model);
+        }
     }
 
     private void RefreshPersonaHighlight()

@@ -5,6 +5,7 @@ import sys
 import threading
 import subprocess
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Optional
 import httpx
@@ -59,6 +60,9 @@ class RuntimeProcessManager:
         self._current_model_kind: Optional[str] = None
         self._externally_managed: bool = False
         self._lock = asyncio.Lock()
+        # Bounded so a long-running server cannot grow it without limit; only the tail matters.
+        self._recent_output: deque[str] = deque(maxlen=200)
+        self._output_lock = threading.Lock()
 
     @property
     def base_url(self) -> str:
@@ -76,13 +80,20 @@ class RuntimeProcessManager:
         """
         Resolve model file path and alias based on kind ('main', 'fast', or direct path/filename).
         Returns (resolved_path, alias).
+
+        A slot chosen through the model catalogue wins over the configured .env path, so a
+        selection made in the UI survives a backend restart. An unset slot falls through to
+        settings exactly as before.
         """
+        from app.agent.model_catalog import get_model_catalog
+
+        catalog = get_model_catalog()
         kind_norm = (model_kind or "main").strip().lower()
         if kind_norm in ("main", "9b", "qwen3.5-9b", "default"):
-            target_path_str = self.main_model_path
+            target_path_str = catalog.selected("main") or self.main_model_path
             alias = "main"
         elif kind_norm in ("fast", "4b", "qwen3.5-4b"):
-            target_path_str = self.fast_model_path
+            target_path_str = catalog.selected("fast") or self.fast_model_path
             alias = "fast"
         else:
             target_path_str = model_kind
@@ -118,7 +129,14 @@ class RuntimeProcessManager:
         return self._externally_managed
 
     def _drain_sync_stream(self, stream, stream_name: str) -> None:
-        """Drain child process output stream in background thread to prevent pipe buffer stalls."""
+        """
+        Drain a child output stream in a background thread to prevent pipe buffer stalls, keeping
+        the most recent lines so a startup failure can report what llama-server actually said.
+
+        Without the buffer a crash surfaced as nothing but 'exited prematurely with code N' --
+        the child's own diagnosis went to a debug logger that is off in normal runs, which made
+        every startup failure look like an unexplainable environment quirk.
+        """
         if not stream:
             return
         try:
@@ -126,6 +144,8 @@ class RuntimeProcessManager:
                 decoded = line.decode("utf-8", errors="replace").rstrip()
                 if decoded:
                     logger.debug("[llama-server %s] %s", stream_name, decoded)
+                    with self._output_lock:
+                        self._recent_output.append(f"[{stream_name}] {decoded}")
         except Exception:
             pass
         finally:
@@ -133,6 +153,12 @@ class RuntimeProcessManager:
                 stream.close()
             except Exception:
                 pass
+
+    def _tail_output(self, limit: int = 12) -> str:
+        """The last few lines the child emitted, for inclusion in a startup error."""
+        with self._output_lock:
+            lines = list(self._recent_output)[-limit:]
+        return "\n".join(lines)
 
     async def ensure_running(self, model_kind: str = "main") -> bool:
         """
@@ -197,6 +223,9 @@ class RuntimeProcessManager:
             if settings.llama_chat_template_kwargs:
                 child_env["LLAMA_CHAT_TEMPLATE_KWARGS"] = settings.llama_chat_template_kwargs
 
+            with self._output_lock:
+                self._recent_output.clear()
+
             logger.info("Spawning llama-server process: %s", " ".join(cmd))
             try:
                 proc = subprocess.Popen(
@@ -225,8 +254,12 @@ class RuntimeProcessManager:
             poll_interval = 0.5
             while time.time() - start_time < self.startup_timeout:
                 if proc.poll() is not None:
+                    # Give the drain threads a moment to flush what the child said on its way out.
+                    await asyncio.sleep(0.2)
+                    detail = self._tail_output()
                     raise RuntimeError(
                         f"llama-server exited prematurely with code {proc.returncode} during startup."
+                        + (f"\n{detail}" if detail else "")
                     )
                 if await self.health_check(timeout=1.5):
                     logger.info("llama-server successfully started and healthy at %s (model: %s)", self.base_url, alias)
@@ -235,8 +268,12 @@ class RuntimeProcessManager:
 
             # Startup timed out -> kill process
             logger.error("llama-server startup timed out after %.1fs", self.startup_timeout)
+            detail = self._tail_output()
             await self._stop_internal()
-            raise RuntimeError(f"llama-server failed to become healthy within {self.startup_timeout}s.")
+            raise RuntimeError(
+                f"llama-server failed to become healthy within {self.startup_timeout}s."
+                + (f"\n{detail}" if detail else "")
+            )
 
     async def _stop_internal(self, sweep_all: bool = False) -> bool:
         """
@@ -288,6 +325,27 @@ class RuntimeProcessManager:
 
         logger.info("llama-server stop routine complete. GPU VRAM released.")
         return True
+
+    async def reload(self, model_kind: str = "main") -> bool:
+        """
+        Restart llama-server on ``model_kind``, even when the requested kind is the one already
+        running -- which ``ensure_running`` deliberately will not do, since its health check
+        short-circuits on a healthy server of the same kind. Changing which *file* a slot points
+        at leaves the kind unchanged, so switching models needs this explicit path.
+
+        When the running server was started outside Jarvis, stopping only the tracked child would
+        leave it serving the old weights and the caller would see a successful switch that
+        changed nothing. In that case the sweep is the only way to actually free the port, so it
+        is used rather than reported as success.
+        """
+        sweep = self._externally_managed
+        if sweep:
+            logger.info(
+                "Reloading an externally-managed llama-server; sweeping llama-server processes "
+                "so the port is actually released for the new model."
+            )
+        await self.stop(sweep_all=sweep)
+        return await self.ensure_running(model_kind)
 
     async def stop(self, sweep_all: bool = False) -> bool:
         """

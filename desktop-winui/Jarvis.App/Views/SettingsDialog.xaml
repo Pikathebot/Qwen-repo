@@ -21,6 +21,87 @@
             </StackPanel>
 
             <StackPanel Spacing="8">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="MODELS" FontSize="11" Foreground="#64748B" VerticalAlignment="Center" />
+                    <ProgressRing
+                        x:Name="ModelBusyRing"
+                        Grid.Column="1"
+                        Width="14"
+                        Height="14"
+                        IsActive="False"
+                        Visibility="Collapsed" />
+                </Grid>
+                <TextBlock
+                    Text="Main is what chat runs on; Fast is the smaller model the router falls back to. Models kept directly in models/ are recommended."
+                    FontSize="11"
+                    Foreground="#64748B"
+                    TextWrapping="Wrap" />
+
+                <ListView
+                    x:Name="ModelList"
+                    SelectionMode="None"
+                    MaxHeight="200"
+                    ItemsSource="{x:Bind ModelsViewModel.Models}">
+                    <ListView.ItemTemplate>
+                        <DataTemplate x:DataType="models:ModelInfo">
+                            <Grid Padding="8,6" ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <TextBlock Text="{x:Bind Name}" Foreground="White" FontSize="13" TextTrimming="CharacterEllipsis" />
+                                        <!-- Visibility set in code-behind: x:Bind cannot express a bool-to-Visibility hop without a converter. -->
+                                        <TextBlock
+                                            x:Name="RecommendedBadge"
+                                            Text="Recommended"
+                                            Foreground="#06B6D4"
+                                            FontSize="10"
+                                            VerticalAlignment="Center"
+                                            Visibility="Collapsed" />
+                                    </StackPanel>
+                                    <TextBlock
+                                        x:Name="ModelSubtitle"
+                                        Foreground="#64748B"
+                                        FontSize="11"
+                                        TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                                <Button
+                                    x:Name="MainButton"
+                                    Grid.Column="1"
+                                    Content="Main"
+                                    Padding="10,2"
+                                    FontSize="11"
+                                    Tag="{x:Bind}"
+                                    Click="SelectMainModel_Click" />
+                                <Button
+                                    x:Name="FastButton"
+                                    Grid.Column="2"
+                                    Content="Fast"
+                                    Padding="10,2"
+                                    FontSize="11"
+                                    Tag="{x:Bind}"
+                                    Click="SelectFastModel_Click" />
+                            </Grid>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+
+                <TextBlock
+                    x:Name="ModelStatusText"
+                    FontSize="11"
+                    Foreground="#94A3B8"
+                    TextWrapping="Wrap"
+                    Visibility="Collapsed" />
+            </StackPanel>
+
+            <StackPanel Spacing="8">
                 <TextBlock Text="PERSONA" FontSize="11" Foreground="#64748B" />
                 <ListView
                     x:Name="PersonaList"
